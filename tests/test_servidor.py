@@ -25,6 +25,7 @@ class StockTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.stock = Stock(self.root / 'datos')
+        self.technician_id = self.stock.add_technician('Técnico de prueba')
         self.files = []
         for i in range(5):
             path = self.root / f'{i}.xml'
@@ -35,18 +36,18 @@ class StockTests(unittest.TestCase):
     def test_parallel_clients_never_share_license(self):
         machines = [machine() for _ in range(15)]
         with ThreadPoolExecutor(max_workers=15) as pool:
-            results = list(pool.map(lambda m: self.stock.reserve({'machine': m}), machines))
+            results = list(pool.map(lambda m: self.stock.reserve({'technician_id': self.technician_id, 'machine': m}), machines))
         assigned = [r for r in results if r]
         self.assertEqual(len(assigned), 5)
         self.assertEqual(len({r['id'] for r in assigned}), 5)
         for m, row in zip(machines, results):
             if row:
-                self.assertEqual(self.stock.reserve({'machine': m})['id'], row['id'])
+                self.assertEqual(self.stock.reserve({'technician_id': self.technician_id, 'machine': m})['id'], row['id'])
 
     def test_parallel_retries_same_machine(self):
         m = machine()
         with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda _: self.stock.reserve({'machine': m}), range(8)))
+            results = list(pool.map(lambda _: self.stock.reserve({'technician_id': self.technician_id, 'machine': m}), range(8)))
         self.assertEqual(len({r['id'] for r in results}), 1)
 
     def test_duplicates_and_invalid_xml(self):
@@ -65,7 +66,7 @@ class StockTests(unittest.TestCase):
 
     def test_release_reassign_preserves_audit(self):
         m = machine()
-        assigned = self.stock.reserve({'machine': m, 'info': {'Serial': 'TESTSN', 'Tecnico': 'T1'}}, '127.0.0.1')
+        assigned = self.stock.reserve({'technician_id': self.technician_id, 'machine': m, 'info': {'Serial': 'TESTSN', 'Tecnico': 'T1'}}, '127.0.0.1')
         self.stock.report({'machine': m, 'id': assigned['id'], 'state': 'usada',
                            'result': {'before_partial': 'ZZZZZ', 'after_partial': '00000'}, 'detail': 'Verificada'})
         self.stock.report({'machine': m, 'id': assigned['id'], 'state': 'usada', 'result': {'before_partial': '00000'}})
@@ -76,7 +77,7 @@ class StockTests(unittest.TestCase):
             self.stock.release(assigned['id'], '   ')
         self.stock.release(assigned['id'], 'Retirada verificada')
         self.assertEqual(len(self.stock.history(assigned['id'])), 4)
-        new = self.stock.reserve({'machine': machine()})
+        new = self.stock.reserve({'technician_id': self.technician_id, 'machine': machine()})
         self.assertNotEqual(new['id'], assigned['id'])
         self.assertEqual(len(self.stock.assignments()), 2)
         with self.assertRaises(ValueError):
@@ -84,7 +85,7 @@ class StockTests(unittest.TestCase):
 
     def test_withdraw_and_backup(self):
         self.stock.toggle(1, False)
-        assigned = self.stock.reserve({'machine': machine()})
+        assigned = self.stock.reserve({'technician_id': self.technician_id, 'machine': machine()})
         self.assertEqual(next(r for r in self.stock.inventory() if r['assignment'] == assigned['id'])['id'], 2)
         with self.assertRaises(ValueError):
             self.stock.toggle(2, False)
@@ -101,9 +102,9 @@ class StockTests(unittest.TestCase):
     def test_invalid_uuid_and_redact_full_key(self):
         for value in ('bad', str(uuid.UUID(int=0)), str(uuid.UUID(int=2**128 - 1))):
             with self.assertRaises(ValueError):
-                self.stock.reserve({'machine': value})
+                self.stock.reserve({'technician_id': self.technician_id, 'machine': value})
         m = machine()
-        assigned = self.stock.reserve({'machine': m})
+        assigned = self.stock.reserve({'technician_id': self.technician_id, 'machine': m})
         self.stock.report({'machine': m, 'id': assigned['id'], 'state': 'revision',
                            'detail': 'AAAAA-BBBBB-CCCCC-DDDDD-00000'})
         self.assertNotIn('AAAAA-BBBBB', self.stock.assignments()[0]['detail'])
@@ -142,12 +143,17 @@ class HttpsTests(unittest.TestCase):
             with urllib.request.urlopen(req, context=context, timeout=5) as response:
                 return json.load(response)
         with self.assertRaises(urllib.error.HTTPError) as rejected:
-            post('/reserve', {'machine': machine()}, credential='wrong')
+            post('/reserve', {'technician_id': self.technician_id, 'machine': machine()}, credential='wrong')
         self.assertEqual(rejected.exception.code, 401)
+        users = post('/technicians', {})['technicians']
+        self.assertEqual(users, [{'id': self.technician_id, 'name': 'Técnico de prueba'}])
+        with self.assertRaises(urllib.error.HTTPError) as missing_technician:
+            post('/reserve', {'machine': machine()})
+        self.assertEqual(missing_technician.exception.code, 422)
         m = machine()
-        assigned = post('/reserve', {'machine': m, 'info': {'Serial': 'SERIAL-TEST'}})
+        assigned = post('/reserve', {'technician_id': self.technician_id, 'machine': m, 'info': {'Serial': 'SERIAL-TEST'}})
         self.assertIn('<ProductKey>', assigned['xml'])
-        self.assertEqual(post('/reserve', {'machine': m})['id'], assigned['id'])
+        self.assertEqual(post('/reserve', {'technician_id': self.technician_id, 'machine': m})['id'], assigned['id'])
         self.assertTrue(post('/report', {'machine': m, 'id': assigned['id'], 'state': 'usada'})['ok'])
         row = self.stock.assignments()[0]
         self.assertEqual(row['state'], 'usada')

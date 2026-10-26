@@ -14,6 +14,7 @@ import sqlite3
 import ssl
 import sys
 import uuid
+import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import PurePosixPath
@@ -57,6 +58,10 @@ def validate_machine(value):
     return str(parsed).upper()
 
 
+class TechnicianError(ValueError):
+    pass
+
+
 class Stock:
     def __init__(self, directory=DATA):
         self.directory = Path(directory)
@@ -69,11 +74,14 @@ class Stock:
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL, xml TEXT NOT NULL,
                 fingerprint TEXT UNIQUE NOT NULL, suffix TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1, created TEXT NOT NULL DEFAULT '');
+            CREATE TABLE IF NOT EXISTS technicians (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT UNIQUE NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1, created TEXT NOT NULL, updated TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS assignments (
                 id TEXT PRIMARY KEY, license_id INTEGER NOT NULL REFERENCES licenses(id),
                 machine TEXT NOT NULL, info TEXT NOT NULL, state TEXT NOT NULL,
                 created TEXT NOT NULL, updated TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
-                result TEXT NOT NULL DEFAULT '{}');
+                result TEXT NOT NULL DEFAULT '{}', technician_id INTEGER REFERENCES technicians(id));
             CREATE UNIQUE INDEX IF NOT EXISTS active_license ON assignments(license_id) WHERE state!='baja';
             CREATE UNIQUE INDEX IF NOT EXISTS active_machine ON assignments(machine) WHERE state!='baja';
             CREATE TABLE IF NOT EXISTS events (
@@ -92,6 +100,8 @@ class Stock:
                 values = self.classify(c, row['xml'])
                 c.execute('UPDATE licenses SET edition=?,channel=?,reference=?,classification_source=? WHERE id=?',
                           (values['edition'], values['channel'], values['reference'], values['classification_source'], row['id']))
+            if 'technician_id' not in {r['name'] for r in c.execute('PRAGMA table_info(assignments)')}:
+                c.execute('ALTER TABLE assignments ADD COLUMN technician_id INTEGER REFERENCES technicians(id)')
             if 'result' not in {r['name'] for r in c.execute('PRAGMA table_info(assignments)')}:
                 c.execute("ALTER TABLE assignments ADD COLUMN result TEXT NOT NULL DEFAULT '{}'")
             for row in c.execute("SELECT id,xml FROM licenses WHERE suffix='' ").fetchall():
@@ -290,21 +300,82 @@ class Stock:
             c.execute('UPDATE licenses SET enabled=? WHERE id=?', (int(enabled), license_id))
             self.event(c, '', 'stock', f'Licencia #{license_id}: ' + ('habilitada' if enabled else 'retirada'))
 
+    @staticmethod
+    def technician_name(value):
+        if not isinstance(value, str) or any(unicodedata.category(ch).startswith('C') for ch in value):
+            raise ValueError('Nombre de usuario no válido.')
+        name = ' '.join(unicodedata.normalize('NFC', value).split())
+        if not 1 <= len(name) <= 120:
+            raise ValueError('El nombre debe tener entre 1 y 120 caracteres.')
+        return name, name.casefold()
+
+    def technicians(self, active_only=False):
+        with self.connection() as c:
+            query = "SELECT t.id,t.name,t.active,t.created,t.updated,count(a.id) AS installations FROM technicians t LEFT JOIN assignments a ON a.technician_id=t.id"
+            if active_only:
+                query += ' WHERE t.active=1'
+            return [dict(r) for r in c.execute(query + ' GROUP BY t.id ORDER BY t.normalized_name,t.id')]
+
+    def add_technician(self, name):
+        name, normalized = self.technician_name(name)
+        try:
+            with self.connection() as c:
+                cur = c.execute('INSERT INTO technicians(name,normalized_name,created,updated) VALUES(?,?,?,?)', (name, normalized, now(), now()))
+                self.event(c, '', 'usuario_alta', f'Usuario #{cur.lastrowid}: {name}')
+                return cur.lastrowid
+        except sqlite3.IntegrityError:
+            raise ValueError('Ya existe un usuario con ese nombre, incluso si está desactivado.') from None
+
+    def edit_technician(self, technician_id, name=None, active=None):
+        if name is None and active is None:
+            return
+        with self.connection() as c:
+            c.execute('BEGIN IMMEDIATE')
+            old = c.execute('SELECT * FROM technicians WHERE id=?', (technician_id,)).fetchone()
+            if not old:
+                raise ValueError('Usuario inexistente.')
+            new_name, normalized = self.technician_name(name if name is not None else old['name'])
+            enabled = old['active'] if active is None else int(bool(active))
+            try:
+                c.execute('UPDATE technicians SET name=?,normalized_name=?,active=?,updated=? WHERE id=?',
+                          (new_name, normalized, enabled, now(), technician_id))
+            except sqlite3.IntegrityError:
+                raise ValueError('Ya existe otro usuario con ese nombre.') from None
+            self.event(c, '', 'usuario_modificado', f"Usuario #{technician_id}: {old['name']} → {new_name}; {'activo' if enabled else 'inactivo'}")
+
+    @staticmethod
+    def require_technician(c, technician_id, active=True):
+        if type(technician_id) is not int:
+            raise TechnicianError('Seleccione un técnico de la lista del servidor. Actualice el cliente USB.')
+        row = c.execute('SELECT id,name,active FROM technicians WHERE id=?', (technician_id,)).fetchone()
+        if not row or (active and not row['active']):
+            raise TechnicianError('El técnico ya no está disponible. Actualice la lista y seleccione uno activo.')
+        return row
+
     def reserve(self, data, ip=''):
         machine = validate_machine(data.get('machine'))
         raw_info = data.get('info', {})
         if not isinstance(raw_info, dict):
             raise ValueError('Datos del equipo no válidos.')
-        info = {k: str(raw_info.get(k, ''))[:300] for k in ('Serial', 'Fabricante', 'Modelo', 'Windows', 'Version', 'Build', 'Tecnico')}
+        info = {k: str(raw_info.get(k, ''))[:300] for k in ('Serial', 'Fabricante', 'Modelo', 'Windows', 'Version', 'Build')}
         info['IP'] = ip
         with self.connection() as c:
             c.execute('BEGIN IMMEDIATE')
-            row = c.execute("SELECT a.id,a.state,l.xml,l.name,l.edition,l.channel FROM assignments a JOIN licenses l ON l.id=a.license_id WHERE a.machine=? AND a.state!='baja'", (machine,)).fetchone()
+            technician = self.require_technician(c, data.get('technician_id'))
+            info['Tecnico'] = technician['name']
+            info['TecnicoID'] = technician['id']
+            row = c.execute("SELECT a.id,a.state,a.info,l.xml,l.name,l.edition,l.channel FROM assignments a JOIN licenses l ON l.id=a.license_id WHERE a.machine=? AND a.state!='baja'", (machine,)).fetchone()
             if row:
                 if row['edition'] == UNKNOWN or row['channel'] == UNKNOWN:
                     raise ValueError('Clasifique primero la licencia ya asignada a este equipo.')
                 if data.get('edition') not in (None, row['edition']) or data.get('channel') not in (None, row['channel']):
                     raise ValueError('El equipo ya tiene otra asignación activa. Revísela antes de cambiar de edición o tipo.')
+                if row['state'] != 'usada':
+                    snapshot = json.loads(row['info'])
+                    snapshot.update({'Tecnico': technician['name'], 'TecnicoID': technician['id']})
+                    c.execute('UPDATE assignments SET info=?,technician_id=?,updated=? WHERE id=?',
+                              (json.dumps(snapshot, ensure_ascii=False), technician['id'], now(), row['id']))
+                self.event(c, row['id'], 'reintento', f"Usuario #{technician['id']}: {technician['name']}")
                 return dict(row)
             edition = data.get('edition')
             if edition is not None and edition not in EDITIONS[:-1]:
@@ -328,9 +399,9 @@ class Stock:
             if not lic:
                 return None
             aid = secrets.token_hex(24)
-            c.execute('INSERT INTO assignments(id,license_id,machine,info,state,created,updated) VALUES(?,?,?,?,?,?,?)',
-                      (aid, lic['id'], machine, json.dumps(info, ensure_ascii=False), 'pendiente', now(), now()))
-            self.event(c, aid, 'asignada', f'Equipo {machine}; IP {ip}')
+            c.execute('INSERT INTO assignments(id,license_id,machine,info,state,created,updated,technician_id) VALUES(?,?,?,?,?,?,?,?)',
+                      (aid, lic['id'], machine, json.dumps(info, ensure_ascii=False), 'pendiente', now(), now(), technician['id']))
+            self.event(c, aid, 'asignada', f"Equipo {machine}; IP {ip}; usuario #{technician['id']}: {technician['name']}")
             return {'id': aid, 'state': 'pendiente', 'xml': lic['xml'], 'name': lic['name'], 'edition': lic['edition'], 'channel': lic['channel']}
 
     def report(self, data):
@@ -353,6 +424,7 @@ class Stock:
                 raise ValueError('Asignación inexistente o dada de baja.')
             if row['state'] == 'usada' and state != 'usada':
                 raise ValueError('Una licencia usada no se puede degradar.')
+            actor = self.require_technician(c, data['technician_id'], active=False) if 'technician_id' in data else None
             stored = json.loads(row['result'])
             # Conservar el estado anterior de la PRIMERA instalación al reintentar.
             for k, v in result.items():
@@ -360,7 +432,8 @@ class Stock:
                     stored[k] = v
             c.execute('UPDATE assignments SET state=?,detail=?,result=?,updated=? WHERE id=?',
                       (state, detail, json.dumps(stored), now(), row['id']))
-            self.event(c, row['id'], state, detail)
+            audit = detail + (f" · Usuario #{actor['id']}: {actor['name']}" if actor else '')
+            self.event(c, row['id'], state, audit)
         return {'ok': True}
 
     def release(self, assignment, reason):
@@ -426,10 +499,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/reserve':
                 result = self.server.stock.reserve(data, self.client_address[0])
                 self.reply(200 if result else 409, result or {'error': 'Stock agotado'})
+            elif self.path == '/technicians':
+                self.reply(200, {'technicians': [{'id': r['id'], 'name': r['name']} for r in self.server.stock.technicians(active_only=True)]})
             elif self.path == '/report':
                 self.reply(200, self.server.stock.report(data))
             else:
                 self.reply(404, {'error': 'Ruta desconocida'})
+        except TechnicianError as e:
+            self.reply(422, {'error': str(e)})
         except (ValueError, TypeError):
             self.reply(400, {'error': 'Solicitud no válida'})
         except (OSError, TimeoutError):

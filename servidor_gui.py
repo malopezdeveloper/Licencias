@@ -45,7 +45,7 @@ class ServerApp:
         self.inventory_rows = []
         self.assignment_rows = []
         self.event_rows = []
-        self.root.title('PULSIA · Servidor de licencias · v0.5')
+        self.root.title('PULSIA · Servidor de licencias · v0.6')
         self.root.geometry('1220x800')
         self.root.minsize(640, 420)
         self.root.configure(bg='#eef2f6')
@@ -58,7 +58,7 @@ class ServerApp:
         style.configure('TButton', padding=(10, 7), font=('Segoe UI', 10))
         style.configure('Treeview', rowheight=28, font=('Segoe UI', 10), background='white', fieldbackground='white')
         style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'), padding=7)
-        self.viewport = ScrollFrame(root, min_width=800)
+        self.viewport = ScrollFrame(root, min_width=900)
         self.viewport.pack(fill='both', expand=True)
         shell = ttk.Frame(self.viewport.content, padding=20)
         shell.pack(fill='both', expand=True)
@@ -85,11 +85,13 @@ class ServerApp:
         self.types_tab = self.tab('Stock por tipo')
         self.install_tab = self.tab('Instalaciones')
         self.history_tab = self.tab('Historial')
+        self.users_tab = self.tab('Usuarios / técnicos')
         self.config_tab = self.tab('Servidor y app USB')
         self.build_stock()
         self.build_types()
         self.build_installs()
         self.build_history()
+        self.build_users()
         self.build_config()
         self.footer = tk.StringVar(value='Preparado')
         self.footer_label = ttk.Label(shell, textvariable=self.footer, wraplength=1100)
@@ -205,7 +207,7 @@ class ServerApp:
                           ('Exportar CSV', self.export_installs)]:
             ttk.Button(row, text=text, command=cmd).pack(side='left', padx=(0, 6))
         self.install_tree = self.table(self.install_tab, [('id', 'Asignación', 180), ('license', 'Licencia', 75), ('serial', 'Serie', 140),
-                                ('model', 'Modelo', 160), ('edition', 'Edición', 110), ('channel', 'Tipo', 110), ('windows', 'Windows', 170), ('state', 'Estado', 100), ('date', 'Fecha', 160)])
+                                ('model', 'Modelo', 160), ('technician', 'Técnico', 140), ('edition', 'Edición', 110), ('channel', 'Tipo', 110), ('windows', 'Windows', 170), ('state', 'Estado', 100), ('date', 'Fecha', 160)])
         self.install_tree.bind('<Double-1>', lambda _: self.install_details())
         ttk.Label(self.install_tab, text='La baja registra un motivo y conserva el historial. No desinstala la clave del equipo anterior.').pack(anchor='w')
 
@@ -215,6 +217,49 @@ class ServerApp:
         ttk.Label(top, text='Importaciones, asignaciones, resultados y bajas · Fechas mostradas en hora local').pack(side='left')
         ttk.Button(top, text='Actualizar', command=self.refresh).pack(side='right')
         self.history_tree = self.table(self.history_tab, [('date', 'Fecha', 170), ('action', 'Acción', 120), ('assignment', 'Asignación', 230), ('detail', 'Detalle', 550)])
+
+    def build_users(self):
+        ttk.Label(self.users_tab, text='Estos usuarios se ofrecen al cliente USB como técnicos. Los inactivos no pueden iniciar nuevas instalaciones.').pack(anchor='w')
+        row = ttk.Frame(self.users_tab)
+        row.pack(fill='x', pady=10)
+        for text, action in [('Añadir usuario', self.add_user), ('Cambiar nombre', self.rename_user), ('Activar / desactivar', self.toggle_user), ('Actualizar', self.refresh)]:
+            ttk.Button(row, text=text, command=action).pack(side='left', padx=(0, 8))
+        self.users_tree = self.table(self.users_tab, [('id', 'ID', 60), ('name', 'Nombre del técnico', 250), ('active', 'Estado', 100),
+                                     ('installations', 'Instalaciones', 110), ('created', 'Creado', 170), ('updated', 'Actualizado', 170)])
+        self.users_tree.bind('<Double-1>', lambda _: self.rename_user())
+        ttk.Label(self.users_tab, text='Cambiar un nombre o desactivar un usuario conserva el nombre original de sus instalaciones y todo su historial.').pack(anchor='w')
+
+    def add_user(self):
+        name = simpledialog.askstring('Añadir usuario', 'Nombre del técnico:', parent=self.root)
+        if name is not None:
+            try:
+                self.stock.add_technician(name)
+                self.refresh()
+                self.footer.set('Usuario creado. Actualice la lista desde el cliente USB.')
+            except Exception as e:
+                self.error(e)
+
+    def rename_user(self):
+        try:
+            iid = int(self.selected(self.users_tree))
+            row = next(r for r in self.user_rows if r['id'] == iid)
+            name = simpledialog.askstring('Cambiar nombre', 'Nombre del técnico:', initialvalue=row['name'], parent=self.root)
+            if name is not None:
+                self.stock.edit_technician(iid, name=name)
+                self.refresh()
+                self.footer.set('Nombre actualizado. El historial anterior se conserva.')
+        except Exception as e:
+            self.error(e)
+
+    def toggle_user(self):
+        try:
+            iid = int(self.selected(self.users_tree))
+            row = next(r for r in self.user_rows if r['id'] == iid)
+            self.stock.edit_technician(iid, active=not row['active'])
+            self.refresh()
+            self.footer.set('Estado del usuario actualizado. El servidor validará la lista vigente al reservar.')
+        except Exception as e:
+            self.error(e)
 
     def build_config(self):
         frame = self.config_tab
@@ -365,6 +410,7 @@ class ServerApp:
 
     def refresh(self):
         try:
+            self.user_rows = self.stock.technicians()
             self.inventory_rows = self.stock.inventory()
             self.assignment_rows = self.stock.assignments()
             self.event_rows = self.stock.history()
@@ -406,7 +452,8 @@ class ServerApp:
         for r in self.assignment_rows:
             if self.matches(r, self.install_search.get(), self.install_state.get()):
                 info = json.loads(r['info'])
-                install_rows.append((r['id'], (r['id'], r['license_id'], info.get('Serial', ''), info.get('Modelo', ''), r['edition'], r['channel'], info.get('Windows', ''), r['state'], local_date(r['created'])), r['state']))
+                install_rows.append((r['id'], (r['id'], r['license_id'], info.get('Serial', ''), info.get('Modelo', ''), info.get('Tecnico', ''), r['edition'], r['channel'], info.get('Windows', ''), r['state'], local_date(r['created'])), r['state']))
+        self.populate(self.users_tree, [(r['id'], (r['id'], r['name'], 'Activo' if r['active'] else 'Inactivo', r['installations'], local_date(r['created']), local_date(r['updated'])), 'usada' if r['active'] else 'baja') for r in self.user_rows])
         groups = {}
         for row in self.inventory_rows:
             group = groups.setdefault((row['edition'], row['channel']), {'total': 0})

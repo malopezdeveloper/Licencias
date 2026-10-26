@@ -19,6 +19,7 @@ class ImportTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.stock = Stock(self.root / 'db')
+        self.technician_id = self.stock.add_technician('Técnico de prueba')
 
     def write(self, name, raw):
         path = self.root / name
@@ -35,8 +36,8 @@ class ImportTests(unittest.TestCase):
         row = self.stock.inventory()[0]
         self.assertEqual(row['state'], 'sin identificar')
         with self.assertRaises(ValueError):
-            self.stock.reserve({'machine': str(uuid.uuid4())})
-        self.assertIsNone(self.stock.reserve({'machine': str(uuid.uuid4()), 'edition': 'Pro'}))
+            self.stock.reserve({'technician_id': self.technician_id, 'machine': str(uuid.uuid4())})
+        self.assertIsNone(self.stock.reserve({'technician_id': self.technician_id, 'machine': str(uuid.uuid4()), 'edition': 'Pro'}))
 
     def test_reference_rule_reclassifies_existing_and_future(self):
         self.stock.import_files([self.write('1.xml', xml(1)), self.write('2.xml', xml(2))])
@@ -44,7 +45,7 @@ class ImportTests(unittest.TestCase):
         self.stock.import_files([self.write('3.xml', xml(3))])
         self.assertEqual({(r['edition'], r['channel']) for r in self.stock.inventory()}, {('Pro', 'CMAR')})
         self.assertEqual({r['state'] for r in self.stock.inventory()}, {'disponible'})
-        assigned = self.stock.reserve({'machine': str(uuid.uuid4()), 'edition': 'Pro', 'channel': 'CMAR'})
+        assigned = self.stock.reserve({'technician_id': self.technician_id, 'machine': str(uuid.uuid4()), 'edition': 'Pro', 'channel': 'CMAR'})
         self.assertEqual((assigned['edition'], assigned['channel']), ('Pro', 'CMAR'))
         self.stock.set_classification(1, 'Home', 'Retail', False)
         self.stock = Stock(self.root / 'db')
@@ -76,13 +77,13 @@ class ImportTests(unittest.TestCase):
     def test_edition_channel_selection_never_falls_back_to_other_stock(self):
         self.stock.import_files([self.write('home.xml', xml(1, 'Home', 'OEM')),
                                  self.write('pro.xml', xml(2, 'Pro', 'CMAR'))])
-        self.assertIsNone(self.stock.reserve({'machine': str(uuid.uuid4()), 'edition': 'Pro', 'channel': 'OEM'}))
+        self.assertIsNone(self.stock.reserve({'technician_id': self.technician_id, 'machine': str(uuid.uuid4()), 'edition': 'Pro', 'channel': 'OEM'}))
         m = str(uuid.uuid4())
-        assigned = self.stock.reserve({'machine': m, 'edition': 'Pro', 'channel': 'CMAR'})
+        assigned = self.stock.reserve({'technician_id': self.technician_id, 'machine': m, 'edition': 'Pro', 'channel': 'CMAR'})
         self.assertEqual(assigned['edition'], 'Pro')
         with self.assertRaises(ValueError):
-            self.stock.reserve({'machine': m, 'edition': 'Home', 'channel': 'OEM'})
-        self.assertIsNone(self.stock.reserve({'machine': str(uuid.uuid4()), 'edition': 'Pro', 'channel': 'CMAR'}))
+            self.stock.reserve({'technician_id': self.technician_id, 'machine': m, 'edition': 'Home', 'channel': 'OEM'})
+        self.assertIsNone(self.stock.reserve({'technician_id': self.technician_id, 'machine': str(uuid.uuid4()), 'edition': 'Pro', 'channel': 'CMAR'}))
         self.assertEqual(sum(r['state'] == 'disponible' for r in self.stock.inventory()), 1)
 
     def test_utf16_namespaces_and_conflicting_metadata(self):

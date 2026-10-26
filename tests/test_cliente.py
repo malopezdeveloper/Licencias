@@ -22,7 +22,7 @@ class FlowTests(unittest.TestCase):
             return Response({'ok':True})
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp,'config.json').write_text(json.dumps({'servidor':'https://server:8443','token':'secret'}))
-            app=c.Client.__new__(c.Client); app.q=queue.Queue(); app.technician_value='Test'
+            app=c.Client.__new__(c.Client); app.q=queue.Queue(); app.technician_id=1
             with patch.object(c,'BASE',Path(tmp)), patch.object(c,'os',SimpleNamespace(name='nt')), patch.object(c,'ctypes',SimpleNamespace(windll=SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda:True)))), patch.object(c,'info',return_value={'machine':'12345678-1234-1234-1234-123456789ABC','edition':'Professional','info':{'Modelo':'Test','Serial':'SN'}}), patch.object(c,'install',return_value={'ok':install_ok,'before_partial':'ZZZZZ','after_partial':'EEEEE'}), patch.object(c.urllib.request,'build_opener',return_value=SimpleNamespace(open=request)):
                 app.work()
             messages=[]
@@ -32,6 +32,9 @@ class FlowTests(unittest.TestCase):
         calls,last=self.run_flow()
         self.assertEqual(calls[-1][1]['state'],'usada'); self.assertIn('CORRECTO',last[1])
         self.assertNotIn('AAAAA-BBBBB',last[1])
+        self.assertEqual(calls[0][1]['technician_id'],1)
+        self.assertNotIn('Tecnico',calls[0][1]['info'])
+        self.assertEqual(calls[-1][1]['technician_id'],1)
     def test_install_fail_stays_blocked(self):
         calls,last=self.run_flow(install_ok=False)
         self.assertEqual(calls[-1][1]['state'],'revision'); self.assertIn('bloqueada',last[1])

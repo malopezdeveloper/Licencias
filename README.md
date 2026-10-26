@@ -1,12 +1,13 @@
 # PULSIA · Servidor de licencias CMAR
 
-Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.5.
+Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.6.
 
 ## Qué puedes hacer desde la interfaz
 
 - **Stock:** importar XML sueltos, ZIP o carpetas completas con subcarpetas, detectar claves duplicadas, buscar y filtrar, retirar o habilitar licencias sin borrar su historial, exportar CSV y hacer copias de seguridad.
 - **Stock por tipo:** resumen por edición (Pro, Home…) y tipo (CMAR, OEM, Retail…), con cantidades disponibles, usadas, pendientes, en revisión, retiradas y sin identificar.
 - **Instalaciones:** consultar número de serie, fabricante, modelo, Windows y build, UUID, IP, técnico opcional, fechas, resultado, últimos cinco caracteres de las claves anterior y nueva, código de Windows e historial. Dar de baja una asignación con motivo para devolver la licencia al stock.
+- **Usuarios / técnicos:** añadir usuarios, cambiar sus nombres, activar o desactivar y consultar su número de instalaciones. Solo los activos aparecen en el cliente.
 - **Historial:** consultar importaciones, asignaciones, resultados y bajas. Actualización automática cada tres segundos.
 - **Servidor y app USB:** configurar HTTPS, crear certificados LAN, iniciar/detener el servidor, compilar el EXE y preparar el pendrive con sus tres archivos.
 
@@ -20,7 +21,8 @@ Las licencias con edición o tipo sin identificar se conservan fuera del stock d
 4. En **Servidor y app USB**, indica la URL que usarán los clientes: por ejemplo `https://192.168.1.139:8443`, usando la IP real y estable de tu servidor. También puedes usar un nombre que resuelva por DNS.
 5. Pulsa **Crear certificados LAN**. El certificado se genera para el nombre o IP de esa URL. Si cambias el nombre/IP, crea nuevos certificados y vuelve a preparar los USB.
 6. Pulsa **Iniciar servidor** y permite TCP 8443 entrante en el firewall de la LAN del taller. Mantén abierta la aplicación; no se instala como servicio automático.
-7. En **Stock**, importa los XML que todavía no están consumidos: selecciona archivos XML/ZIP o una carpeta. Comprueba y completa su clasificación antes de distribuirlos.
+7. En **Usuarios / técnicos**, crea los usuarios que podrán seleccionarse en el cliente. La lista comienza vacía; no se inventan usuarios al migrar.
+8. En **Stock**, importa los XML que todavía no están consumidos: selecciona archivos XML/ZIP o una carpeta. Comprueba y completa su clasificación antes de distribuirlos.
 
 Si ya tienes certificados de tu organización, selecciónalos en lugar de crearlos. Necesitas certificado servidor y clave privada PEM, además de la CA pública PEM para los USB. Nunca se desactiva la comprobación TLS.
 
@@ -50,7 +52,7 @@ Todo el código y el compilador del cliente están en **app_usb/** dentro de la 
 1. En Windows, pulsa **Compilar EXE del cliente** desde la interfaz. También puedes ejecutar **app_usb/COMPILAR.bat**. La primera compilación necesita Internet para instalar PyInstaller en su propio entorno.
 2. El resultado es `app_usb/salida/PULSIA_Cliente_Licencias.exe`.
 3. Pulsa **Preparar pendrive / carpeta** y selecciona una carpeta del USB. Se copian el EXE, `config.json` con URL/token y `ca.pem` con el certificado público. No se copian licencias, bases ni claves privadas.
-4. En cada PC, abre **PULSIA_Cliente_Licencias.exe**, acepta los permisos de administrador, indica el técnico si quieres, elige edición automática o explícita y el tipo deseado (por ejemplo CMAR), y pulsa **Solicitar e instalar licencia**. En automático se consulta `EditionID` del Windows instalado. El servidor solo ofrece stock de esa edición y del tipo solicitado; no sustituye Home por Pro ni cambia de tipo si no hay existencias.
+4. En cada PC, abre **PULSIA_Cliente_Licencias.exe**, acepta los permisos de administrador, conecta y selecciona un técnico de la lista del servidor, elige edición automática o explícita y el tipo deseado (por ejemplo CMAR), y pulsa **Solicitar e instalar licencia**. En automático se consulta `EditionID` del Windows instalado. El servidor solo ofrece stock de esa edición y del tipo solicitado; no sustituye Home por Pro ni cambia de tipo si no hay existencias.
 
 En el primer arranque, el cliente **pregunta la IP o nombre del servidor**. Puedes introducir `192.168.1.139`, `192.168.1.139:9443` o una URL HTTPS. Una dirección sin puerto utiliza 8443. Se guarda junto al EXE en `config.json`, conservando el token y el resto de ajustes. En los siguientes arranques se recuerda; **Cambiar IP / servidor** permite modificarla. El USB debe permitir escritura. Si falla el guardado, se informa y se conserva la configuración anterior. Cambiar la dirección se bloquea mientras hay una instalación en curso.
 
@@ -72,6 +74,18 @@ En [Actions](https://github.com/malopezdeveloper/Licencias/actions), el flujo **
 | `tests/` | Pruebas de concurrencia, importación ZIP/carpetas, clasificación, migración, HTTPS, interfaz y cliente |
 | `datos/` | Base, configuración y certificados locales; excluidos de Git |
 
+## Técnicos proporcionados por el servidor
+
+El técnico es obligatorio y **no se puede escribir libremente** en el cliente. Al abrir el cliente con una dirección confirmada, o al cambiarla, se conecta por HTTPS y obtiene los usuarios activos del servidor. También hay un botón **Conectar / actualizar técnicos**. El botón de instalación se habilita después de seleccionar uno.
+
+Desde **Usuarios / técnicos** puedes añadir usuarios, cambiar sus nombres y activarlos/desactivarlos. El servidor valida el ID del técnico activo en la misma transacción que reserva la licencia: nombres inventados, IDs desconocidos, usuarios inactivos y clientes antiguos que no envían selección se rechazan sin consumir stock. Una lista antigua del USB no permite usar un técnico que ya se haya desactivado.
+
+Cada instalación guarda el ID estable y el nombre del técnico que inicia o retoma su asignación pendiente. Si otro usuario retoma una operación pendiente, queda como responsable y el historial conserva el operador anterior. Cuando la instalación ya está usada, los reintentos no cambian su responsable histórico. Cambiar el nombre o desactivarlo no modifica las instalaciones antiguas. Los reintentos y confirmaciones registran el operador en el historial; una operación ya iniciada puede confirmar su resultado aunque el usuario se desactive mientras instala. Los usuarios se desactivan en lugar de borrar su historial.
+
+La lista es un catálogo para identificar al operador, no un inicio de sesión con contraseña. Su modificación se hace en el servidor, no desde la API del pendrive. Si no hay usuarios activos o falla la conexión, el cliente no permite escribir otro nombre ni iniciar una instalación.
+
+**Al actualizar a v0.6:** sustituye el código del servidor conservando `datos/`, crea los usuarios y recompila/prepara los USB. Los registros anteriores se conservan con su nombre histórico; no se crean usuarios automáticamente a partir de esos nombres. Debes actualizar tanto el servidor como los clientes.
+
 ## Datos y copias de seguridad
 
 `datos/licencias.db` contiene los XML completos, asignaciones y eventos. `datos/servidor.json` contiene la credencial cliente y la configuración. Los certificados creados se guardan en `datos/certificados/`. Cada generación crea una CA nueva y conserva las anteriores; no se conserva la clave privada de la CA, que no hace falta para usar el certificado emitido.
@@ -91,7 +105,7 @@ Para migrar de v0.1, **con el servidor antiguo detenido**, copia su `licencias.d
 - Los XML `BURN` y las claves duplicadas se omiten. El sistema no puede detectar uso previo fuera de este stock; no vuelvas a usar las copias originales en otros scripts o servidores.
 - La edición de Windows debe ser compatible con la clave. Con un cliente antiguo, el servidor usa el nombre de Windows o una única edición identificada del stock para compatibilidad; si hay ambigüedad rechaza la petición y pide actualizar el cliente.
 - El cliente necesita permisos de administrador y los componentes CIM/licencias de Windows operativos.
-- No hay administración remota ni cuentas en la interfaz: quien puede abrir la aplicación en el servidor puede administrar el stock. La API LAN requiere el token y TLS.
+- No hay administración remota ni autenticación de usuarios en la interfaz: quien puede abrir la aplicación en el servidor puede administrar el stock. La API LAN requiere el token y TLS.
 
 ## Linux
 
