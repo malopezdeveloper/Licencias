@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -90,7 +91,7 @@ class StockTests(unittest.TestCase):
         self.stock.toggle(1, True)
         target = self.root / 'backup.db'
         self.stock.backup(target)
-        with sqlite3.connect(target) as c:
+        with closing(sqlite3.connect(target)) as c:
             self.assertEqual(c.execute('SELECT count(*) FROM licenses').fetchone()[0], 5)
         with self.assertRaises(ValueError):
             self.stock.backup(target)
@@ -110,11 +111,12 @@ class StockTests(unittest.TestCase):
     def test_migration_v01(self):
         old = self.root / 'v01'
         old.mkdir()
-        with sqlite3.connect(old / 'licencias.db') as c:
+        with closing(sqlite3.connect(old / 'licencias.db')) as c:
             c.executescript('''CREATE TABLE licenses(id INTEGER PRIMARY KEY,name TEXT NOT NULL,xml TEXT NOT NULL,fingerprint TEXT UNIQUE NOT NULL);
                 CREATE TABLE assignments(id TEXT PRIMARY KEY,license_id INTEGER NOT NULL REFERENCES licenses(id),machine TEXT NOT NULL,
                 info TEXT NOT NULL,state TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '');''')
             c.execute('INSERT INTO licenses VALUES(1,?,?,?)', ('old.xml', self.files[0].read_text(), 'testhash'))
+            c.commit()
         (old / 'servidor.json').write_text(json.dumps({'client_token': 'old-token'}))
         upgraded = Stock(old)
         self.assertEqual(upgraded.inventory()[0]['suffix'], '00000')
