@@ -1,0 +1,88 @@
+# PULSIA · Servidor de licencias CMAR
+
+Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.3.
+
+## Qué puedes hacer desde la interfaz
+
+- **Stock:** importar XML o una carpeta, detectar claves duplicadas, buscar y filtrar, retirar o habilitar licencias sin borrar su historial, exportar CSV y hacer copias de seguridad.
+- **Instalaciones:** consultar número de serie, fabricante, modelo, Windows y build, UUID, IP, técnico opcional, fechas, resultado, últimos cinco caracteres de las claves anterior y nueva, código de Windows e historial. Dar de baja una asignación con motivo para devolver la licencia al stock.
+- **Historial:** consultar importaciones, asignaciones, resultados y bajas. Actualización automática cada tres segundos.
+- **Servidor y app USB:** configurar HTTPS, crear certificados LAN, iniciar/detener el servidor, compilar el EXE y preparar el pendrive con sus tres archivos.
+
+Los XML se guardan en SQLite. Una transacción bloquea la licencia **antes** de entregarla. Solicitudes simultáneas no pueden recibir la misma licencia y repetir desde un PC recupera su asignación activa. Pendientes y revisión siguen bloqueadas; no caducan ni se liberan automáticamente.
+
+## Arranque en Windows
+
+1. Descarga este repositorio y extrae el ZIP.
+2. Instala **Python 3.12 o 3.13 de 64 bits**, con pip y Tcl/Tk, desde [python.org](https://www.python.org/downloads/windows/).
+3. Ejecuta **INICIAR_SERVIDOR.bat**. El primer arranque crea `.venv` e instala la dependencia para generar certificados; necesita Internet solo para esa preparación.
+4. En **Servidor y app USB**, indica la URL que usarán los clientes: por ejemplo `https://192.168.1.139:8443`, usando la IP real y estable de tu servidor. También puedes usar un nombre que resuelva por DNS.
+5. Pulsa **Crear certificados LAN**. El certificado se genera para el nombre o IP de esa URL. Si cambias el nombre/IP, crea nuevos certificados y vuelve a preparar los USB.
+6. Pulsa **Iniciar servidor** y permite TCP 8443 entrante en el firewall de la LAN del taller. Mantén abierta la aplicación; no se instala como servicio automático.
+7. En **Stock**, importa los XML que todavía no están consumidos.
+
+Si ya tienes certificados de tu organización, selecciónalos en lugar de crearlos. Necesitas certificado servidor y clave privada PEM, además de la CA pública PEM para los USB. Nunca se desactiva la comprobación TLS.
+
+## Crear el EXE y preparar el pendrive
+
+Todo el código y el compilador del cliente están en **app_usb/** dentro de la carpeta del servidor.
+
+1. En Windows, pulsa **Compilar EXE del cliente** desde la interfaz. También puedes ejecutar **app_usb/COMPILAR.bat**. La primera compilación necesita Internet para instalar PyInstaller en su propio entorno.
+2. El resultado es `app_usb/salida/PULSIA_Cliente_Licencias.exe`.
+3. Pulsa **Preparar pendrive / carpeta** y selecciona una carpeta del USB. Se copian el EXE, `config.json` con URL/token y `ca.pem` con el certificado público. No se copian licencias, bases ni claves privadas.
+4. En cada PC, abre **PULSIA_Cliente_Licencias.exe**, acepta los permisos de administrador, indica el técnico si quieres y pulsa **Solicitar e instalar licencia**.
+
+Los PCs clientes no necesitan Python. El USB solo transporta el cliente, su configuración y el certificado. La asignación pertenece al **PC**, no al pendrive. No se necesita la antigua carpeta `220`, `lic2.ps1` ni `START2.bat`.
+
+En [Actions](https://github.com/malopezdeveloper/Licencias/actions), el flujo **Validar y compilar cliente Windows** también prueba la interfaz y compila el EXE. Una ejecución completada permite descargar el artefacto `PULSIA_Cliente_Licencias_Windows_x64`. Su configuración es de ejemplo: personalízala con el servidor o prepara el USB desde la interfaz. El ejecutable no está firmado digitalmente.
+
+## Estructura
+
+| Ruta | Contenido |
+|---|---|
+| `servidor_gui.py` | Aplicación gráfica de administración |
+| `servidor.py` | Stock, SQLite y API HTTPS |
+| `certificados.py` | Generación de CA local y certificado servidor |
+| `INICIAR_SERVIDOR.bat` | Arranque Windows y preparación del entorno |
+| `app_usb/` | Cliente, configuración de ejemplo y compilador del EXE |
+| `tests/` | Pruebas de concurrencia, migración, HTTPS, interfaz y cliente |
+| `datos/` | Base, configuración y certificados locales; excluidos de Git |
+
+## Datos y copias de seguridad
+
+`datos/licencias.db` contiene los XML completos, asignaciones y eventos. `datos/servidor.json` contiene la credencial cliente y la configuración. Los certificados creados se guardan en `datos/certificados/`. Cada generación crea una CA nueva y conserva las anteriores; no se conserva la clave privada de la CA, que no hace falta para usar el certificado emitido.
+
+**No subas datos reales al repositorio público.** `.gitignore` excluye bases, XML, credenciales, certificados, claves, entornos y ejecutables generados. La configuración publicada en `app_usb/config.example.json` es ficticia; las credenciales se crean localmente. Protege la carpeta `datos` con permisos del sistema para los administradores y la cuenta que ejecuta el servidor. Trata el token del USB como credencial del taller y no expongas la API a Internet.
+
+La copia desde la interfaz es una instantánea consistente de SQLite, incluso con servidor activo. Conserva aparte `servidor.json` y los certificados. Para restaurar, cierra el servidor y sustituye la base por la copia. Si la copia es antigua, reconcilia primero las asignaciones posteriores: de lo contrario podrían volver a ofrecerse claves ya entregadas.
+
+Para migrar de v0.1, **con el servidor antiguo detenido**, copia su `licencias.db` y `servidor.json` dentro de `datos/` antes del primer arranque. La estructura se actualiza conservando licencias y asignaciones. Completa la configuración HTTPS en la interfaz y prepara los USB.
+
+## Comportamiento y límites
+
+- Se instala mediante `SoftwareLicensingService.InstallProductKey` y se verifica el sufijo entre productos de Windows. Se registra el estado de licencia que devuelve Windows, pero **no se ejecuta la activación** (`/ato`). Verificar cinco caracteres conserva la limitación del script original: dos claves pueden compartir sufijo.
+- Si falla la red o el proceso, la licencia puede permanecer pendiente. Reintenta **en el mismo PC**; no se consume otra. Si Windows ya tenía la clave instalada, el reintento permite repetir la comprobación y notificación.
+- La baja es administrativa: devuelve al stock, conserva el historial y **no desinstala** la clave del PC anterior. Verifica que procede reutilizarla antes de darla de baja.
+- El UUID viene del firmware. Equipos con UUID duplicados se identificarían como el mismo PC; corrige esos UUID antes de usar la aplicación. Se rechazan los UUID nulos y genéricos de unos.
+- Los XML `BURN` y las claves duplicadas se omiten. El sistema no puede detectar uso previo fuera de este stock; no vuelvas a usar las copias originales en otros scripts o servidores.
+- La edición de Windows debe ser compatible con la clave. El cliente necesita permisos de administrador y los componentes CIM/licencias de Windows operativos.
+- No hay administración remota ni cuentas en la interfaz: quien puede abrir la aplicación en el servidor puede administrar el stock. La API LAN requiere el token y TLS.
+
+## Linux
+
+El servidor gráfico también puede ejecutarse en Linux **con escritorio**, Python 3 y Tk disponibles:
+
+```sh
+sh iniciar_servidor.sh
+```
+
+En Debian/Ubuntu instala previamente `python3-venv` y `python3-tk`. También existe el modo sin interfaz `python servidor.py --servir`, después de configurar certificados y red. El cliente y su compilación son para Windows.
+
+## Pruebas
+
+```sh
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+La prueba gráfica necesita escritorio (o Xvfb en Linux). Las pruebas del cliente simulan cambios de licencia; no aplican claves en el PC de pruebas. El flujo Windows compila el ejecutable nativo, pero la instalación de una licencia real debe validarse en un equipo del taller destinado a esa licencia.
