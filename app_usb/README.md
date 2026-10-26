@@ -28,3 +28,9 @@ El PC donde se ejecuta el EXE no necesita Python. No se buscan licencias XML en 
 La compilación requiere Windows e Internet. Si falla, el compilador devuelve error y conserva el EXE anterior; no lo considera una compilación nueva. Los permisos de Windows o el antivirus pueden impedir reemplazar un EXE que esté abierto: ciérralo y repite.
 
 El stock se bloquea antes de recibir la clave. Un fallo nunca libera automáticamente una asignación. Repite en el mismo PC para recuperar la misma licencia. Instalar/verificar no equivale a activar Windows.
+
+## Dirección recordada y ventana adaptable
+
+En el primer uso se solicita la IP o nombre del servidor. Sin puerto se utiliza HTTPS 8443; también se admite IP:puerto o URL HTTPS. La dirección queda guardada en config.json junto al EXE, conservando la credencial preparada por el servidor. Usa **Cambiar IP / servidor** para modificarla. El pendrive necesita permiso de escritura y el certificado debe corresponder a la dirección introducida. Una dirección por sí sola no sustituye el token ni la CA de la preparación del USB.
+
+La ventana y el registro tienen barras verticales y horizontales. Al maximizar, los controles y el registro aprovechan el espacio; al reducir, las barras mantienen accesibles las zonas fuera de la vista.

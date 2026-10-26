@@ -10,7 +10,15 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
+from urllib.parse import urlsplit
+import ipaddress
+import tempfile
+
+try:
+    from .widgets import ScrollFrame, scrolled_text
+except ImportError:
+    from widgets import ScrollFrame, scrolled_text
 import urllib.request
 import urllib.error
 import uuid
@@ -74,13 +82,92 @@ def detected_edition(value):
             'education':'Education', 'educationn':'Education N', 'professionaleducation':'Pro Education',
             'professionalworkstation':'Pro for Workstations'}.get(str(value).casefold(), '')
 
+def normalize_server(value, default_port=8443):
+    value = str(value).strip()
+    if not value:
+        raise ValueError('Indique la IP o el nombre del servidor.')
+    # Una IP sin esquema utiliza HTTPS y el puerto habitual del servidor.
+    if '://' not in value:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            address = None
+        if address and address.version == 6:
+            value = '[' + str(address) + ']'
+        value = 'https://' + value
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        host = parsed.hostname
+    except ValueError:
+        raise ValueError('Dirección o puerto no válidos.') from None
+    if parsed.scheme != 'https' or not host or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
+        raise ValueError('Use una IP o dirección HTTPS sin rutas ni credenciales.')
+    try:
+        address = ipaddress.ip_address(host)
+        host = str(address)
+        if address.version == 6:
+            host = '[' + host + ']'
+    except ValueError:
+        host = host.encode('idna').decode('ascii').lower()
+        if len(host) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.')):
+            raise ValueError('Nombre del servidor no válido.')
+        if re.fullmatch(r'[0-9.]+', host):
+            raise ValueError('IP no válida.')
+    if port is None:
+        port = default_port
+    if not 1 <= port <= 65535:
+        raise ValueError('Puerto fuera de rango.')
+    return f'https://{host}:{port}'
+
+
+def load_config():
+    path = BASE / 'config.json'
+    if not path.exists():
+        return {}
+    config = json.loads(path.read_text(encoding='utf-8-sig'))
+    if not isinstance(config, dict):
+        raise ValueError('config.json debe contener un objeto JSON.')
+    return config
+
+
+def save_server(value):
+    config = load_config()
+    url = normalize_server(value)
+    config['servidor'] = url
+    config['servidor_confirmado'] = True
+    # Mantener token y demás ajustes. Reemplazo atómico, sin truncar la memoria anterior.
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=BASE, prefix='config_', suffix='.tmp', delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(config, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        temp_path.replace(BASE / 'config.json')
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+    return url
+
+
 class Client:
     def __init__(self,root):
         self.root=root; self.q=queue.Queue(); self.running=False
-        root.title('PULSIA · Cliente de licencias'); root.geometry('820x610'); root.minsize(740,550)
-        frame=ttk.Frame(root,padding=20); frame.pack(fill='both',expand=True)
+        root.title('PULSIA · Cliente de licencias'); root.geometry('900x700'); root.minsize(540,380)
+        self.viewport=ScrollFrame(root,min_width=720)
+        self.viewport.pack(fill='both',expand=True)
+        frame=ttk.Frame(self.viewport.content,padding=20); frame.pack(fill='both',expand=True)
         ttk.Label(frame,text='PULSIA · Instalación de licencia',font=('Segoe UI',18,'bold')).pack(anchor='w')
         ttk.Label(frame,text='Licencia asignada desde el servidor de la red local.').pack(anchor='w',pady=(4,16))
+        server_row=ttk.Frame(frame); server_row.pack(fill='x',pady=6)
+        server_row.columnconfigure(1,weight=1)
+        ttk.Label(server_row,text='Servidor:').grid(row=0,column=0,sticky='w')
+        self.server_address=tk.StringVar(value='Sin configurar')
+        self.server_entry=ttk.Entry(server_row,textvariable=self.server_address,state='readonly')
+        self.server_entry.grid(row=0,column=1,sticky='ew',padx=8)
+        self.server_button=ttk.Button(server_row,text='Cambiar IP / servidor',command=self.change_server)
+        self.server_button.grid(row=0,column=2,sticky='e')
         self.technician=tk.StringVar()
         tech_row=ttk.Frame(frame); tech_row.pack(fill='x',pady=6)
         ttk.Label(tech_row,text='Técnico (opcional):').pack(side='left')
@@ -94,13 +181,51 @@ class Client:
         ttk.Label(type_row,text='Tipo:').pack(side='left')
         self.channel_box=ttk.Combobox(type_row,textvariable=self.channel,values=('Cualquiera','CMAR','OEM','Retail','Volumen MAK','Volumen KMS','Volumen'),state='readonly',width=16)
         self.channel_box.pack(side='left',padx=6)
-        self.status=tk.StringVar(value='Preparado. Compruebe config.json antes de empezar.')
-        ttk.Label(frame,textvariable=self.status,wraplength=650).pack(anchor='w',pady=8)
+        self.status=tk.StringVar(value='Preparado. Configure el servidor para empezar.')
+        self.status_label=ttk.Label(frame,textvariable=self.status,wraplength=650)
+        self.status_label.pack(fill='x',pady=8)
         self.button=ttk.Button(frame,text='Solicitar e instalar licencia',command=self.start); self.button.pack(anchor='w',pady=8)
         self.progress=ttk.Progressbar(frame,mode='indeterminate'); self.progress.pack(fill='x',pady=8)
-        self.log=tk.Text(frame,height=12,state='disabled',wrap='word'); self.log.pack(fill='both',expand=True)
-        ttk.Label(frame,text='Instala la clave y verifica su sufijo. No ejecuta la activación de Windows.').pack(anchor='w',pady=(10,0))
+        log_frame,self.log=scrolled_text(frame,height=12,state='disabled')
+        log_frame.pack(fill='both',expand=True)
+        self.note_label=ttk.Label(frame,text='Instala la clave y verifica su sufijo. No ejecuta la activación de Windows.',wraplength=650)
+        self.note_label.pack(fill='x',pady=(10,0))
+        frame.bind('<Configure>',lambda e:[label.configure(wraplength=max(300,e.width-40)) for label in (self.status_label,self.note_label)])
         root.protocol('WM_DELETE_WINDOW',self.close); root.after(100,self.poll)
+        root.after_idle(self.first_server)
+    def first_server(self):
+        try:
+            config=load_config()
+            current=config.get('servidor','')
+            if current:
+                self.server_address.set(normalize_server(current))
+            if not current or not config.get('servidor_confirmado',False):
+                self.change_server(first=True)
+            else:
+                self.status.set('Preparado. Servidor guardado en el pendrive.')
+        except (ValueError,OSError) as e:
+            self.status.set('No se pudo leer la configuración. Revise config.json o pulse Cambiar IP / servidor.')
+            messagebox.showerror('Configuración',str(e),parent=self.root)
+
+    def change_server(self,first=False):
+        if self.running:
+            return
+        initial=self.server_address.get()
+        if initial=='Sin configurar': initial=''
+        value=simpledialog.askstring('Servidor de licencias',
+            'Introduzca la IP del servidor (ej. 192.168.1.139).\nTambién admite nombre o IP:puerto. Se guardará en este pendrive.',
+            initialvalue=initial,parent=self.root)
+        if value is None:
+            if first:self.status.set('Configuración pendiente. Pulse Cambiar IP / servidor antes de instalar.')
+            return
+        try:
+            url=save_server(value)
+            self.server_address.set(url)
+            self.status.set('Servidor guardado. El certificado debe corresponder a esta IP o nombre.')
+        except (ValueError,OSError) as e:
+            messagebox.showerror('No se pudo guardar el servidor',str(e),parent=self.root)
+            self.status.set('No se guardó el cambio. Compruebe la dirección y que el pendrive permita escritura.')
+
     def close(self):
         if self.running:
             messagebox.showinfo('Operación en curso','Espere a que termine la operación antes de cerrar.'); return
@@ -113,10 +238,21 @@ class Client:
                 self.status.set(text)
                 self.log.config(state='normal'); self.log.insert('end',text+'\n'); self.log.see('end'); self.log.config(state='disabled')
                 if kind=='done':
-                    self.running=False; self.button.config(state='normal'); self.tech_entry.config(state='normal'); self.edition_box.config(state='readonly'); self.channel_box.config(state='readonly'); self.progress.stop()
+                    self.running=False; self.button.config(state='normal'); self.tech_entry.config(state='normal'); self.server_button.config(state='normal'); self.edition_box.config(state='readonly'); self.channel_box.config(state='readonly'); self.progress.stop()
         except queue.Empty: pass
         self.root.after(100,self.poll)
     def start(self):
+        try:
+            config=load_config()
+            if not config.get('servidor_confirmado',False):
+                self.change_server(first=True)
+                config=load_config()
+                if not config.get('servidor_confirmado',False): return
+            self.connection_config=dict(config)
+        except (ValueError,OSError) as e:
+            messagebox.showerror('Configuración',str(e),parent=self.root)
+            return
+        self.server_button.config(state='disabled')
         self.running=True; self.button.config(state='disabled'); self.tech_entry.config(state='disabled'); self.progress.start()
         self.technician_value=self.technician.get().strip()[:100]
         self.requested_edition=self.edition.get()
@@ -127,7 +263,7 @@ class Client:
         assignment=None; installed=False
         try:
             if os.name!='nt' or not ctypes.windll.shell32.IsUserAnAdmin(): raise RuntimeError('Ejecute la aplicación como administrador.')
-            config=json.loads((BASE/'config.json').read_text(encoding='utf-8-sig'))
+            config=getattr(self,'connection_config',None) or load_config()
             url=config['servidor'].rstrip('/'); token=config['token']
             from urllib.parse import urlsplit
             parts=urlsplit(url)

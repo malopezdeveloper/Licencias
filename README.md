@@ -1,6 +1,6 @@
 # PULSIA · Servidor de licencias CMAR
 
-Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.4.
+Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.5.
 
 ## Qué puedes hacer desde la interfaz
 
@@ -39,6 +39,10 @@ El estado numérico original del XML se muestra en la ficha como **Estado XML**,
 
 Límites por operación: 1 MiB por XML, 10.000 XML y 256 MiB leídos; máximo 20.000 entradas por ZIP. Se rechazan XML cifrados dentro de ZIP, rutas no admitidas, enlaces simbólicos y DTD/entidades. Divide lotes mayores.
 
+## Ventanas y desplazamiento
+
+Servidor y cliente incluyen barras horizontales y verticales para acceder al contenido en ventanas pequeñas. Al ampliar o maximizar, las tablas y registros ocupan el espacio disponible; los contadores del servidor se redistribuyen en filas según el ancho. Las tablas mantienen su posición de desplazamiento al actualizarse. Los registros y las fichas de detalle tienen sus propias barras para líneas largas. La rueda desplaza el contenido; Mayús + rueda permite desplazamiento horizontal en el contenedor general.
+
 ## Crear el EXE y preparar el pendrive
 
 Todo el código y el compilador del cliente están en **app_usb/** dentro de la carpeta del servidor.
@@ -47,6 +51,10 @@ Todo el código y el compilador del cliente están en **app_usb/** dentro de la 
 2. El resultado es `app_usb/salida/PULSIA_Cliente_Licencias.exe`.
 3. Pulsa **Preparar pendrive / carpeta** y selecciona una carpeta del USB. Se copian el EXE, `config.json` con URL/token y `ca.pem` con el certificado público. No se copian licencias, bases ni claves privadas.
 4. En cada PC, abre **PULSIA_Cliente_Licencias.exe**, acepta los permisos de administrador, indica el técnico si quieres, elige edición automática o explícita y el tipo deseado (por ejemplo CMAR), y pulsa **Solicitar e instalar licencia**. En automático se consulta `EditionID` del Windows instalado. El servidor solo ofrece stock de esa edición y del tipo solicitado; no sustituye Home por Pro ni cambia de tipo si no hay existencias.
+
+En el primer arranque, el cliente **pregunta la IP o nombre del servidor**. Puedes introducir `192.168.1.139`, `192.168.1.139:9443` o una URL HTTPS. Una dirección sin puerto utiliza 8443. Se guarda junto al EXE en `config.json`, conservando el token y el resto de ajustes. En los siguientes arranques se recuerda; **Cambiar IP / servidor** permite modificarla. El USB debe permitir escritura. Si falla el guardado, se informa y se conserva la configuración anterior. Cambiar la dirección se bloquea mientras hay una instalación en curso.
+
+La IP o nombre introducidos deben estar incluidos en el certificado del servidor. Si cambias a una dirección nueva, genera un certificado para esa dirección desde el servidor y vuelve a preparar el USB con su CA pública. No se omite la verificación TLS ni se envía el token por HTTP.
 
 Los PCs clientes no necesitan Python. El USB solo transporta el cliente, su configuración y el certificado. La asignación pertenece al **PC**, no al pendrive. No se necesita la antigua carpeta `220`, `lic2.ps1` ni `START2.bat`.
 

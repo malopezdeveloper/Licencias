@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from servidor import Stock, LicenseServer, ROOT
 from clasificacion import UNKNOWN, EDITIONS, CHANNELS
+from app_usb.widgets import ScrollFrame, scrolled_text
 
 APP_USB = ROOT / 'app_usb'
 STATES = ('todos', 'disponible', 'pendiente', 'usada', 'revision', 'baja', 'retirada', 'sin identificar')
@@ -44,9 +45,9 @@ class ServerApp:
         self.inventory_rows = []
         self.assignment_rows = []
         self.event_rows = []
-        self.root.title('PULSIA · Servidor de licencias · v0.4')
+        self.root.title('PULSIA · Servidor de licencias · v0.5')
         self.root.geometry('1220x800')
-        self.root.minsize(950, 640)
+        self.root.minsize(640, 420)
         self.root.configure(bg='#eef2f6')
         style = ttk.Style(root)
         style.theme_use('clam')
@@ -57,7 +58,9 @@ class ServerApp:
         style.configure('TButton', padding=(10, 7), font=('Segoe UI', 10))
         style.configure('Treeview', rowheight=28, font=('Segoe UI', 10), background='white', fieldbackground='white')
         style.configure('Treeview.Heading', font=('Segoe UI', 10, 'bold'), padding=7)
-        shell = ttk.Frame(root, padding=20)
+        self.viewport = ScrollFrame(root, min_width=800)
+        self.viewport.pack(fill='both', expand=True)
+        shell = ttk.Frame(self.viewport.content, padding=20)
         shell.pack(fill='both', expand=True)
         top = ttk.Frame(shell)
         top.pack(fill='x')
@@ -68,10 +71,14 @@ class ServerApp:
         cards = ttk.Frame(shell)
         cards.pack(fill='x', pady=(0, 15))
         self.counters = {}
+        self.card_labels = []
+        self.card_columns = None
         for name in ('Total', 'Disponibles', 'Pendientes', 'Usadas', 'Revisión', 'Retiradas', 'Sin identificar'):
             var = tk.StringVar(value=f'{name}: 0')
-            ttk.Label(cards, textvariable=var, style='Card.TLabel').pack(side='left', fill='x', expand=True, padx=(0, 8))
+            label = ttk.Label(cards, textvariable=var, style='Card.TLabel')
+            self.card_labels.append(label)
             self.counters[name] = var
+        cards.bind('<Configure>', lambda e: self.layout_cards(cards, e.width))
         self.tabs = ttk.Notebook(shell)
         self.tabs.pack(fill='both', expand=True)
         self.stock_tab = self.tab('Stock de licencias')
@@ -85,11 +92,31 @@ class ServerApp:
         self.build_history()
         self.build_config()
         self.footer = tk.StringVar(value='Preparado')
-        ttk.Label(shell, textvariable=self.footer, wraplength=1100).pack(anchor='w', pady=(12, 0))
+        self.footer_label = ttk.Label(shell, textvariable=self.footer, wraplength=1100)
+        self.footer_label.pack(fill='x', pady=(12, 0))
+        shell.bind('<Configure>', lambda e: self.resize_labels(shell, e.width))
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
         root.after(100, self.poll)
         root.after(3000, self.auto_refresh)
+
+    def layout_cards(self, parent, width):
+        columns = 7 if width >= 1365 else 4 if width >= 760 else 3
+        if self.card_columns == columns:
+            return
+        self.card_columns = columns
+        for column in range(7):
+            parent.columnconfigure(column, weight=1 if column < columns else 0, uniform='cards' if column < columns else '')
+        for index, label in enumerate(self.card_labels):
+            label.grid(row=index // columns, column=index % columns, sticky='nsew', padx=(0, 6), pady=3)
+
+    def resize_labels(self, parent, width):
+        def visit(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Label) and (len(str(child.cget('text'))) > 85 or child is self.footer_label):
+                    child.configure(wraplength=max(300, width - 65))
+                visit(child)
+        visit(parent)
 
     def tab(self, title):
         frame = ttk.Frame(self.tabs, padding=14)
@@ -221,8 +248,8 @@ class ServerApp:
         ttk.Button(row, text='Preparar pendrive / carpeta', command=self.prepare_usb).pack(side='left', padx=(0, 8))
         ttk.Button(row, text='Abrir carpeta app_usb', command=self.open_usb_folder).pack(side='left')
         ttk.Label(frame, wraplength=1050, text='Compile en Windows con Internet. Después, prepare el USB: se copian el EXE, su configuración y la CA pública. Los equipos cliente no necesitan Python. No se copian bases de datos ni claves privadas.').pack(anchor='w', pady=4)
-        self.console = tk.Text(frame, height=7, wrap='word', state='disabled', font=('Consolas', 9))
-        self.console.pack(fill='both', expand=True, pady=8)
+        console_frame, self.console = scrolled_text(frame, height=7, state='disabled', font=('Consolas', 9))
+        console_frame.pack(fill='both', expand=True, pady=8)
 
     def choose_file(self, key):
         value = filedialog.askopenfilename(parent=self.root)
@@ -356,11 +383,16 @@ class ServerApp:
     @staticmethod
     def populate(tree, rows):
         selected = tree.selection()
+        previous_x, previous_y = tree.xview(), tree.yview()
         tree.delete(*tree.get_children())
         for iid, values, state in rows:
             tree.insert('', 'end', iid=str(iid), values=values, tags=(state,))
         if selected and tree.exists(selected[0]):
             tree.selection_set(selected[0])
+        if previous_x:
+            tree.xview_moveto(previous_x[0])
+        if previous_y:
+            tree.yview_moveto(previous_y[0])
 
     def render(self):
         if not hasattr(self, 'install_search'):
@@ -420,7 +452,9 @@ class ServerApp:
         window.title('Datos y clasificación de licencia')
         window.geometry('650x440')
         window.transient(self.root)
-        frame = ttk.Frame(window, padding=20)
+        viewport = ScrollFrame(window, min_width=580)
+        viewport.pack(fill='both', expand=True)
+        frame = ttk.Frame(viewport.content, padding=20)
         frame.pack(fill='both', expand=True)
         text = f"Licencia #{iid} · {row['name']} · *****-{row['suffix']}\nReferencia: {row['reference'] or 'No indicada'}\nEstado XML: {row['xml_state'] or 'No indicado'}\nClasificación actual: {row['classification_source']}"
         ttk.Label(frame, text=text, wraplength=600).pack(anchor='w', pady=10)
@@ -605,11 +639,8 @@ class ServerApp:
         window.geometry('850x580')
         body = ttk.Frame(window, padding=14)
         body.pack(fill='both', expand=True)
-        view = tk.Text(body, wrap='word', font=('Consolas', 10))
-        scroll = ttk.Scrollbar(body, command=view.yview)
-        view.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right', fill='y')
-        view.pack(fill='both', expand=True)
+        view_frame, view = scrolled_text(body, font=('Consolas', 10))
+        view_frame.pack(fill='both', expand=True)
         view.insert('1.0', text)
         view.config(state='disabled')
 
