@@ -1,0 +1,2 @@
+# Solo se utiliza para crear los certificados de la LAN.
+cryptography>=43,<47
