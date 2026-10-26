@@ -6,7 +6,7 @@ Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y u
 
 - **Stock:** importar XML sueltos, ZIP o carpetas completas con subcarpetas, detectar claves duplicadas, buscar y filtrar, retirar o habilitar licencias sin borrar su historial, exportar CSV y hacer copias de seguridad.
 - **Stock por tipo:** resumen por edición (Pro, Home…) y tipo (CMAR, OEM, Retail…), con cantidades disponibles, usadas, pendientes, en revisión, retiradas y sin identificar.
-- **Instalaciones:** consultar número de serie, fabricante, modelo, Windows y build, UUID, IP, técnico opcional, fechas, resultado, últimos cinco caracteres de las claves anterior y nueva, código de Windows e historial. Dar de baja una asignación con motivo para devolver la licencia al stock.
+- **Instalaciones:** consultar número de serie, fabricante, modelo, Windows y build, UUID, IP, técnico seleccionado del servidor, fechas, resultado, últimos cinco caracteres de las claves anterior y nueva, código de Windows e historial. Dar de baja una asignación con motivo para devolver la licencia al stock.
 - **Usuarios / técnicos:** añadir usuarios, cambiar sus nombres, activar o desactivar y consultar su número de instalaciones. Solo los activos aparecen en el cliente.
 - **Historial:** consultar importaciones, asignaciones, resultados y bajas. Actualización automática cada tres segundos.
 - **Servidor y app USB:** configurar HTTPS, crear certificados LAN, iniciar/detener el servidor, compilar el EXE y preparar el pendrive con sus tres archivos.
