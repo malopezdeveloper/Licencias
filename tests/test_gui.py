@@ -25,11 +25,11 @@ class GuiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             stock = Stock(Path(tmp) / 'datos')
             xml = Path(tmp) / 'test.xml'
-            xml.write_text('<l><ProductKey>AAAAA-BBBBB-CCCCC-DDDDD-EEEEE</ProductKey></l>')
+            xml.write_text('<l><ProductKey>AAAAA-BBBBB-CCCCC-DDDDD-EEEEE</ProductKey><Edition>Pro</Edition><Channel>OEM</Channel></l>')
             stock.import_files([xml])
             app = ServerApp(root, stock)
             root.update_idletasks()
-            self.assertEqual(len(app.tabs.tabs()), 4)
+            self.assertEqual(len(app.tabs.tabs()), 5)
             self.assertEqual(len(app.stock_tree.get_children()), 1)
             app.stock_search.set('missing')
             self.assertEqual(len(app.stock_tree.get_children()), 0)
@@ -38,6 +38,13 @@ class GuiTests(unittest.TestCase):
             assigned = stock.reserve({'machine': '12345678-1234-1234-1234-123456789ABC', 'info': {'Serial': 'GUI-TEST'}})
             app.refresh()
             self.assertEqual(len(app.install_tree.get_children()), 1)
+            self.assertEqual(len(app.types_tree.get_children()), 1)
+            app.types_tree.selection_set('0')
+            app.filter_type()
+            self.assertEqual(app.stock_edition.get(), 'Pro')
+            self.assertEqual(app.stock_channel.get(), 'OEM')
+            app.stock_tree.selection_set('1')
+            app.classify_license()
             app.show_assignment(assigned['id'])
             self.assertGreaterEqual(len(root.winfo_children()), 2)
             app.closing = True

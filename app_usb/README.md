@@ -23,7 +23,7 @@ Desde el servidor, **Preparar pendrive / carpeta** copia EXE, configuración rea
 
 Copia también la CA pública PEM como `ca.pem`. No incluyas claves privadas. El nombre/IP debe coincidir con el certificado. Si la CA ya es fiable en Windows, el cliente también usa el almacén de confianza del sistema.
 
-El PC donde se ejecuta el EXE no necesita Python. No se buscan licencias XML en el USB ni se guardan allí las claves recibidas. La ventana muestra modelo, serie, asignación, progreso y resultado; permite registrar un técnico opcional.
+El PC donde se ejecuta el EXE no necesita Python. No se buscan licencias XML en el USB ni se guardan allí las claves recibidas. La ventana muestra modelo, serie, asignación, progreso y resultado; permite registrar un técnico opcional, detectar la edición Windows o seleccionarla y escoger tipo (CMAR, OEM, Retail…). No recibe licencias de otras ediciones o tipos como sustitución si se agota el stock solicitado. Las licencias sin clasificar no se distribuyen.
 
 La compilación requiere Windows e Internet. Si falla, el compilador devuelve error y conserva el EXE anterior; no lo considera una compilación nueva. Los permisos de Windows o el antivirus pueden impedir reemplazar un EXE que esté abierto: ciérralo y repite.
 

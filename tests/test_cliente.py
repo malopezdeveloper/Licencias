@@ -23,7 +23,7 @@ class FlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp,'config.json').write_text(json.dumps({'servidor':'https://server:8443','token':'secret'}))
             app=c.Client.__new__(c.Client); app.q=queue.Queue(); app.technician_value='Test'
-            with patch.object(c,'BASE',Path(tmp)), patch.object(c,'os',SimpleNamespace(name='nt')), patch.object(c,'ctypes',SimpleNamespace(windll=SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda:True)))), patch.object(c,'info',return_value={'machine':'12345678-1234-1234-1234-123456789ABC','info':{'Modelo':'Test','Serial':'SN'}}), patch.object(c,'install',return_value={'ok':install_ok,'before_partial':'ZZZZZ','after_partial':'EEEEE'}), patch.object(c.urllib.request,'build_opener',return_value=SimpleNamespace(open=request)):
+            with patch.object(c,'BASE',Path(tmp)), patch.object(c,'os',SimpleNamespace(name='nt')), patch.object(c,'ctypes',SimpleNamespace(windll=SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda:True)))), patch.object(c,'info',return_value={'machine':'12345678-1234-1234-1234-123456789ABC','edition':'Professional','info':{'Modelo':'Test','Serial':'SN'}}), patch.object(c,'install',return_value={'ok':install_ok,'before_partial':'ZZZZZ','after_partial':'EEEEE'}), patch.object(c.urllib.request,'build_opener',return_value=SimpleNamespace(open=request)):
                 app.work()
             messages=[]
             while not app.q.empty(): messages.append(app.q.get())
@@ -38,4 +38,18 @@ class FlowTests(unittest.TestCase):
     def test_report_failure(self):
         calls,last=self.run_flow(fail_report=True)
         self.assertEqual(len(calls),2); self.assertIn('ya tiene la clave instalada',last[1])
+class EditionTests(unittest.TestCase):
+    def test_detected_windows_edition(self):
+        self.assertEqual(c.detected_edition('Professional'), 'Pro')
+        self.assertEqual(c.detected_edition('Core'), 'Home')
+        self.assertEqual(c.detected_edition('CoreSingleLanguage'), 'Home Single Language')
+        self.assertEqual(c.detected_edition('unknown'), '')
+
+    @unittest.skipUnless(c.os.name == 'nt', 'Consulta de solo lectura en Windows.')
+    def test_real_powershell_inventory(self):
+        data = c.info()
+        self.assertIn('edition', data)
+        self.assertIn('machine', data)
+        self.assertIn('Modelo', data['info'])
+
 if __name__=='__main__': unittest.main()

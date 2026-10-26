@@ -1,15 +1,16 @@
 # PULSIA · Servidor de licencias CMAR
 
-Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.3.
+Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.4.
 
 ## Qué puedes hacer desde la interfaz
 
-- **Stock:** importar XML o una carpeta, detectar claves duplicadas, buscar y filtrar, retirar o habilitar licencias sin borrar su historial, exportar CSV y hacer copias de seguridad.
+- **Stock:** importar XML sueltos, ZIP o carpetas completas con subcarpetas, detectar claves duplicadas, buscar y filtrar, retirar o habilitar licencias sin borrar su historial, exportar CSV y hacer copias de seguridad.
+- **Stock por tipo:** resumen por edición (Pro, Home…) y tipo (CMAR, OEM, Retail…), con cantidades disponibles, usadas, pendientes, en revisión, retiradas y sin identificar.
 - **Instalaciones:** consultar número de serie, fabricante, modelo, Windows y build, UUID, IP, técnico opcional, fechas, resultado, últimos cinco caracteres de las claves anterior y nueva, código de Windows e historial. Dar de baja una asignación con motivo para devolver la licencia al stock.
 - **Historial:** consultar importaciones, asignaciones, resultados y bajas. Actualización automática cada tres segundos.
 - **Servidor y app USB:** configurar HTTPS, crear certificados LAN, iniciar/detener el servidor, compilar el EXE y preparar el pendrive con sus tres archivos.
 
-Los XML se guardan en SQLite. Una transacción bloquea la licencia **antes** de entregarla. Solicitudes simultáneas no pueden recibir la misma licencia y repetir desde un PC recupera su asignación activa. Pendientes y revisión siguen bloqueadas; no caducan ni se liberan automáticamente.
+Las licencias con edición o tipo sin identificar se conservan fuera del stock distribuible hasta que las clasifiques. Los XML se guardan en SQLite. Una transacción bloquea la licencia **antes** de entregarla. Solicitudes simultáneas no pueden recibir la misma licencia y repetir desde un PC recupera su asignación activa. Pendientes y revisión siguen bloqueadas; no caducan ni se liberan automáticamente.
 
 ## Arranque en Windows
 
@@ -19,9 +20,24 @@ Los XML se guardan en SQLite. Una transacción bloquea la licencia **antes** de 
 4. En **Servidor y app USB**, indica la URL que usarán los clientes: por ejemplo `https://192.168.1.139:8443`, usando la IP real y estable de tu servidor. También puedes usar un nombre que resuelva por DNS.
 5. Pulsa **Crear certificados LAN**. El certificado se genera para el nombre o IP de esa URL. Si cambias el nombre/IP, crea nuevos certificados y vuelve a preparar los USB.
 6. Pulsa **Iniciar servidor** y permite TCP 8443 entrante en el firewall de la LAN del taller. Mantén abierta la aplicación; no se instala como servicio automático.
-7. En **Stock**, importa los XML que todavía no están consumidos.
+7. En **Stock**, importa los XML que todavía no están consumidos: selecciona archivos XML/ZIP o una carpeta. Comprueba y completa su clasificación antes de distribuirlos.
 
 Si ya tienes certificados de tu organización, selecciónalos en lugar de crearlos. Necesitas certificado servidor y clave privada PEM, además de la CA pública PEM para los USB. Nunca se desactiva la comprobación TLS.
+
+## Importación y clasificación
+
+En **Stock** puedes seleccionar uno o varios XML/ZIP juntos, o una carpeta con sus subcarpetas. Los ZIP se leen en memoria, sin extraerlos al disco, y pueden contener XML en subcarpetas. No se abren ZIP anidados dentro de otros ZIP. Otros tipos de archivo se ignoran. Se informa de importados, duplicados y errores; un XML incorrecto no impide leer los siguientes. Reimportar nunca duplica claves ni devuelve usadas al stock.
+
+La clasificación guarda **dos campos separados**: edición Windows (Pro, Home, Enterprise…) y tipo de licencia (CMAR, OEM, Retail, Volumen…). Por ejemplo, **Pro / CMAR** es una combinación válida.
+
+1. Si el XML declara `Edition`, `EditionID`, `ProductName`, `Channel` o `LicenseType`, se reconocen los valores explícitos compatibles. Los metadatos contradictorios requieren revisión.
+2. Si solo contiene `ProductKey`, `ProductKeyID`, `ProductKeyState` y `ProductKeyPartNumber`, estos campos **no permiten deducir con certeza** Pro/Home/CMAR. Ni el nombre del archivo ni un estado numérico se interpretan como edición o tipo.
+3. Selecciona la licencia y pulsa **Ver / clasificar licencia**. Asigna la edición y el tipo indicados por el proveedor. Si tiene referencia, activa **Aplicar a todas con esta referencia y recordar para futuras importaciones**: clasifica el lote existente y las futuras importaciones con esa misma referencia. Las reglas se guardan en la base local; no se publican.
+4. Si no hay referencia, puedes clasificar cada licencia individualmente. Las clasificaciones manuales se conservan al reiniciar. **Sin identificar** no se asigna automáticamente a ningún PC.
+
+El estado numérico original del XML se muestra en la ficha como **Estado XML**, separado de los estados administrativos pendiente/usada/baja. La importación valida estructura y formato; no consulta Microsoft ni certifica autenticidad, activación, edición real o derecho de reutilización.
+
+Límites por operación: 1 MiB por XML, 10.000 XML y 256 MiB leídos; máximo 20.000 entradas por ZIP. Se rechazan XML cifrados dentro de ZIP, rutas no admitidas, enlaces simbólicos y DTD/entidades. Divide lotes mayores.
 
 ## Crear el EXE y preparar el pendrive
 
@@ -30,7 +46,7 @@ Todo el código y el compilador del cliente están en **app_usb/** dentro de la 
 1. En Windows, pulsa **Compilar EXE del cliente** desde la interfaz. También puedes ejecutar **app_usb/COMPILAR.bat**. La primera compilación necesita Internet para instalar PyInstaller en su propio entorno.
 2. El resultado es `app_usb/salida/PULSIA_Cliente_Licencias.exe`.
 3. Pulsa **Preparar pendrive / carpeta** y selecciona una carpeta del USB. Se copian el EXE, `config.json` con URL/token y `ca.pem` con el certificado público. No se copian licencias, bases ni claves privadas.
-4. En cada PC, abre **PULSIA_Cliente_Licencias.exe**, acepta los permisos de administrador, indica el técnico si quieres y pulsa **Solicitar e instalar licencia**.
+4. En cada PC, abre **PULSIA_Cliente_Licencias.exe**, acepta los permisos de administrador, indica el técnico si quieres, elige edición automática o explícita y el tipo deseado (por ejemplo CMAR), y pulsa **Solicitar e instalar licencia**. En automático se consulta `EditionID` del Windows instalado. El servidor solo ofrece stock de esa edición y del tipo solicitado; no sustituye Home por Pro ni cambia de tipo si no hay existencias.
 
 Los PCs clientes no necesitan Python. El USB solo transporta el cliente, su configuración y el certificado. La asignación pertenece al **PC**, no al pendrive. No se necesita la antigua carpeta `220`, `lic2.ps1` ni `START2.bat`.
 
@@ -45,7 +61,7 @@ En [Actions](https://github.com/malopezdeveloper/Licencias/actions), el flujo **
 | `certificados.py` | Generación de CA local y certificado servidor |
 | `INICIAR_SERVIDOR.bat` | Arranque Windows y preparación del entorno |
 | `app_usb/` | Cliente, configuración de ejemplo y compilador del EXE |
-| `tests/` | Pruebas de concurrencia, migración, HTTPS, interfaz y cliente |
+| `tests/` | Pruebas de concurrencia, importación ZIP/carpetas, clasificación, migración, HTTPS, interfaz y cliente |
 | `datos/` | Base, configuración y certificados locales; excluidos de Git |
 
 ## Datos y copias de seguridad
@@ -65,7 +81,8 @@ Para migrar de v0.1, **con el servidor antiguo detenido**, copia su `licencias.d
 - La baja es administrativa: devuelve al stock, conserva el historial y **no desinstala** la clave del PC anterior. Verifica que procede reutilizarla antes de darla de baja.
 - El UUID viene del firmware. Equipos con UUID duplicados se identificarían como el mismo PC; corrige esos UUID antes de usar la aplicación. Se rechazan los UUID nulos y genéricos de unos.
 - Los XML `BURN` y las claves duplicadas se omiten. El sistema no puede detectar uso previo fuera de este stock; no vuelvas a usar las copias originales en otros scripts o servidores.
-- La edición de Windows debe ser compatible con la clave. El cliente necesita permisos de administrador y los componentes CIM/licencias de Windows operativos.
+- La edición de Windows debe ser compatible con la clave. Con un cliente antiguo, el servidor usa el nombre de Windows o una única edición identificada del stock para compatibilidad; si hay ambigüedad rechaza la petición y pide actualizar el cliente.
+- El cliente necesita permisos de administrador y los componentes CIM/licencias de Windows operativos.
 - No hay administración remota ni cuentas en la interfaz: quien puede abrir la aplicación en el servidor puede administrar el stock. La API LAN requiere el token y TLS.
 
 ## Linux

@@ -28,7 +28,7 @@ class StockTests(unittest.TestCase):
         self.files = []
         for i in range(5):
             path = self.root / f'{i}.xml'
-            path.write_text(f'<License><ProductKey>AAAAA-BBBBB-CCCCC-DDDDD-{i:05d}</ProductKey></License>')
+            path.write_text(f'<License><ProductKey>AAAAA-BBBBB-CCCCC-DDDDD-{i:05d}</ProductKey><Edition>Pro</Edition><Channel>OEM</Channel></License>')
             self.files.append(path)
         self.stock.import_files(self.files)
 

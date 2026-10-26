@@ -14,9 +14,10 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from urllib.parse import urlsplit
 
 from servidor import Stock, LicenseServer, ROOT
+from clasificacion import UNKNOWN, EDITIONS, CHANNELS
 
 APP_USB = ROOT / 'app_usb'
-STATES = ('todos', 'disponible', 'pendiente', 'usada', 'revision', 'baja', 'retirada')
+STATES = ('todos', 'disponible', 'pendiente', 'usada', 'revision', 'baja', 'retirada', 'sin identificar')
 
 
 def local_date(value):
@@ -43,7 +44,7 @@ class ServerApp:
         self.inventory_rows = []
         self.assignment_rows = []
         self.event_rows = []
-        self.root.title('PULSIA · Servidor de licencias · v0.3')
+        self.root.title('PULSIA · Servidor de licencias · v0.4')
         self.root.geometry('1220x800')
         self.root.minsize(950, 640)
         self.root.configure(bg='#eef2f6')
@@ -67,17 +68,19 @@ class ServerApp:
         cards = ttk.Frame(shell)
         cards.pack(fill='x', pady=(0, 15))
         self.counters = {}
-        for name in ('Total', 'Disponibles', 'Pendientes', 'Usadas', 'Revisión', 'Retiradas'):
+        for name in ('Total', 'Disponibles', 'Pendientes', 'Usadas', 'Revisión', 'Retiradas', 'Sin identificar'):
             var = tk.StringVar(value=f'{name}: 0')
             ttk.Label(cards, textvariable=var, style='Card.TLabel').pack(side='left', fill='x', expand=True, padx=(0, 8))
             self.counters[name] = var
         self.tabs = ttk.Notebook(shell)
         self.tabs.pack(fill='both', expand=True)
         self.stock_tab = self.tab('Stock de licencias')
+        self.types_tab = self.tab('Stock por tipo')
         self.install_tab = self.tab('Instalaciones')
         self.history_tab = self.tab('Historial')
         self.config_tab = self.tab('Servidor y app USB')
         self.build_stock()
+        self.build_types()
         self.build_installs()
         self.build_history()
         self.build_config()
@@ -109,7 +112,7 @@ class ServerApp:
         wrapper.rowconfigure(0, weight=1)
         wrapper.columnconfigure(0, weight=1)
         for tag, color in [('disponible', '#e9f5ee'), ('pendiente', '#fff3dc'), ('usada', '#e7effa'),
-                           ('revision', '#ffe5e5'), ('baja', '#f0f0f0'), ('retirada', '#f0f0f0')]:
+                           ('revision', '#ffe5e5'), ('baja', '#f0f0f0'), ('retirada', '#f0f0f0'), ('sin identificar', '#fff3dc')]:
             tree.tag_configure(tag, background=color)
         return tree
 
@@ -128,16 +131,44 @@ class ServerApp:
 
     def build_stock(self):
         self.stock_search, self.stock_state = self.search_bar(self.stock_tab)
-        buttons = ttk.Frame(self.stock_tab)
-        buttons.pack(fill='x', pady=(10, 0))
-        for text, command in [('Importar XML', self.import_xml), ('Importar carpeta', self.import_folder),
-                              ('Retirar / habilitar', self.toggle_stock), ('Ver instalación', self.stock_install),
-                              ('Exportar CSV', self.export_stock), ('Copia de seguridad', self.backup)]:
-            ttk.Button(buttons, text=text, command=command).pack(side='left', padx=(0, 5))
-        self.stock_tree = self.table(self.stock_tab, [('id', 'ID', 60), ('name', 'Archivo XML', 230), ('suffix', 'Últimos 5', 90),
-                                  ('state', 'Estado', 110), ('serial', 'Serie del equipo', 150), ('model', 'Modelo', 190), ('date', 'Actualizado', 160)])
-        self.stock_tree.bind('<Double-1>', lambda _: self.stock_install())
-        ttk.Label(self.stock_tab, text='Las claves completas permanecen en la base local. Pendientes y revisión también consumen stock.').pack(anchor='w')
+        filters = ttk.Frame(self.stock_tab)
+        filters.pack(fill='x', pady=7)
+        self.stock_edition = tk.StringVar(value='todas')
+        self.stock_channel = tk.StringVar(value='todos')
+        for label, var, values in [('Edición', self.stock_edition, ('todas',) + EDITIONS), ('Tipo', self.stock_channel, ('todos',) + CHANNELS)]:
+            ttk.Label(filters, text=label).pack(side='left', padx=(0, 7))
+            ttk.Combobox(filters, textvariable=var, values=values, state='readonly', width=23).pack(side='left', padx=(0, 12))
+            var.trace_add('write', lambda *_: self.render())
+        commands = [('Importar XML / ZIP', self.import_xml), ('Importar carpeta', self.import_folder),
+                    ('Ver / clasificar licencia', self.classify_license), ('Retirar / habilitar', self.toggle_stock),
+                    ('Ver instalación', self.stock_install), ('Exportar CSV', self.export_stock), ('Copia de seguridad', self.backup)]
+        for start in (0, 4):
+            buttons = ttk.Frame(self.stock_tab)
+            buttons.pack(fill='x', pady=(4, 0))
+            for text, command in commands[start:start + 4]:
+                ttk.Button(buttons, text=text, command=command).pack(side='left', padx=(0, 5))
+        self.stock_tree = self.table(self.stock_tab, [('id', 'ID', 60), ('name', 'Archivo XML', 180), ('suffix', 'Últimos 5', 85),
+                                  ('edition', 'Edición', 120), ('channel', 'Tipo', 110), ('reference', 'Referencia', 140),
+                                  ('state', 'Estado', 100), ('serial', 'Serie del equipo', 140), ('model', 'Modelo', 170), ('date', 'Actualizado', 160)])
+        self.stock_tree.bind('<Double-1>', lambda _: self.classify_license())
+        ttk.Label(self.stock_tab, text='Sin identificar: clasifique por referencia antes de distribuir. Los datos XML no verifican autenticidad ni activación.').pack(anchor='w')
+
+    def build_types(self):
+        ttk.Label(self.types_tab, text='Edición y tipo se cuentan por separado: por ejemplo, Pro / CMAR. Doble clic para filtrar el stock.').pack(anchor='w')
+        self.types_tree = self.table(self.types_tab, [('edition', 'Edición', 170), ('channel', 'Tipo', 150), ('total', 'Total', 85),
+                                    ('available', 'Disponibles', 100), ('pending', 'Pendientes', 100), ('used', 'Usadas', 85),
+                                    ('review', 'Revisión', 85), ('withdrawn', 'Retiradas', 90), ('unknown', 'Sin identificar', 110)])
+        self.types_tree.bind('<Double-1>', lambda _: self.filter_type())
+
+    def filter_type(self):
+        selection = self.types_tree.selection()
+        if selection:
+            values = self.types_tree.item(selection[0])['values']
+            self.stock_edition.set(values[0])
+            self.stock_channel.set(values[1])
+            self.stock_state.set('todos')
+            self.stock_search.set('')
+            self.tabs.select(self.stock_tab)
 
     def build_installs(self):
         self.install_search, self.install_state = self.search_bar(self.install_tab)
@@ -147,7 +178,7 @@ class ServerApp:
                           ('Exportar CSV', self.export_installs)]:
             ttk.Button(row, text=text, command=cmd).pack(side='left', padx=(0, 6))
         self.install_tree = self.table(self.install_tab, [('id', 'Asignación', 180), ('license', 'Licencia', 75), ('serial', 'Serie', 140),
-                                ('model', 'Modelo', 160), ('windows', 'Windows', 170), ('state', 'Estado', 100), ('date', 'Fecha', 160)])
+                                ('model', 'Modelo', 160), ('edition', 'Edición', 110), ('channel', 'Tipo', 110), ('windows', 'Windows', 170), ('state', 'Estado', 100), ('date', 'Fecha', 160)])
         self.install_tree.bind('<Double-1>', lambda _: self.install_details())
         ttk.Label(self.install_tab, text='La baja registra un motivo y conserva el historial. No desinstala la clave del equipo anterior.').pack(anchor='w')
 
@@ -312,7 +343,7 @@ class ServerApp:
             self.event_rows = self.stock.history()
             counts = {state: sum(r['state'] == state for r in self.inventory_rows) for state in STATES}
             for name, value in [('Total', len(self.inventory_rows)), ('Disponibles', counts['disponible']), ('Pendientes', counts['pendiente']),
-                                ('Usadas', counts['usada']), ('Revisión', counts['revision']), ('Retiradas', counts['retirada'])]:
+                                ('Usadas', counts['usada']), ('Revisión', counts['revision']), ('Retiradas', counts['retirada']), ('Sin identificar', counts['sin identificar'])]:
                 self.counters[name].set(f'{name}: {value}')
             self.render()
         except Exception as e:
@@ -336,14 +367,22 @@ class ServerApp:
             return
         stock_rows = []
         for r in self.inventory_rows:
-            if self.matches(r, self.stock_search.get(), self.stock_state.get()):
+            if self.matches(r, self.stock_search.get(), self.stock_state.get()) and self.stock_edition.get() in ('todas', r['edition']) and self.stock_channel.get() in ('todos', r['channel']):
                 info = json.loads(r['info'] or '{}')
-                stock_rows.append((r['id'], (r['id'], r['name'], r['suffix'], r['state'], info.get('Serial', ''), info.get('Modelo', ''), local_date(r['updated'] or r['created'])), r['state']))
+                stock_rows.append((r['id'], (r['id'], r['name'], r['suffix'], r['edition'], r['channel'], r['reference'], r['state'], info.get('Serial', ''), info.get('Modelo', ''), local_date(r['updated'] or r['created'])), r['state']))
         install_rows = []
         for r in self.assignment_rows:
             if self.matches(r, self.install_search.get(), self.install_state.get()):
                 info = json.loads(r['info'])
-                install_rows.append((r['id'], (r['id'], r['license_id'], info.get('Serial', ''), info.get('Modelo', ''), info.get('Windows', ''), r['state'], local_date(r['created'])), r['state']))
+                install_rows.append((r['id'], (r['id'], r['license_id'], info.get('Serial', ''), info.get('Modelo', ''), r['edition'], r['channel'], info.get('Windows', ''), r['state'], local_date(r['created'])), r['state']))
+        groups = {}
+        for row in self.inventory_rows:
+            group = groups.setdefault((row['edition'], row['channel']), {'total': 0})
+            group['total'] += 1
+            group[row['state']] = group.get(row['state'], 0) + 1
+        self.populate(self.types_tree, [(str(i), (edition, channel, counts['total'], counts.get('disponible', 0), counts.get('pendiente', 0),
+                      counts.get('usada', 0), counts.get('revision', 0), counts.get('retirada', 0), counts.get('sin identificar', 0)), '')
+                      for i, ((edition, channel), counts) in enumerate(sorted(groups.items()))])
         self.populate(self.stock_tree, stock_rows)
         self.populate(self.install_tree, install_rows)
         self.populate(self.history_tree, [(r['id'], (local_date(r['date']), r['action'], r['assignment'], r['detail']), '') for r in self.event_rows])
@@ -355,15 +394,14 @@ class ServerApp:
         return rows[0]
 
     def import_xml(self):
-        files = filedialog.askopenfilenames(parent=self.root, title='Seleccionar licencias XML sin consumir', filetypes=[('XML', '*.xml')])
+        files = filedialog.askopenfilenames(parent=self.root, title='Seleccionar XML o ZIP de licencias sin consumir', filetypes=[('Licencias XML / ZIP', '*.xml *.XML *.zip *.ZIP'), ('Todos los archivos', '*.*')])
         if files:
             self.do_import(files)
 
     def import_folder(self):
         folder = filedialog.askdirectory(parent=self.root, title='Carpeta de licencias XML sin consumir')
         if folder:
-            files = sorted(p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() == '.xml')
-            self.do_import(files)
+            self.do_import([folder])
 
     def do_import(self, files):
         def done(results):
@@ -371,6 +409,39 @@ class ServerApp:
             self.footer.set(f"Importados: {sum(r[1] == 'importado' for r in results)} · Duplicados: {sum(r[1] == 'duplicado' for r in results)} · Errores: {sum(r[1].startswith('error:') for r in results)}")
             self.show_text('Resultado de importación', '\n'.join(f'{name}: {result}' for name, result in results) or 'No se encontraron XML.')
         self.background(lambda: self.stock.import_files(files), done)
+
+    def classify_license(self):
+        try:
+            iid = int(self.selected(self.stock_tree))
+            row = self.stock.license_details(iid)
+        except Exception as e:
+            return self.error(e)
+        window = tk.Toplevel(self.root)
+        window.title('Datos y clasificación de licencia')
+        window.geometry('650x440')
+        window.transient(self.root)
+        frame = ttk.Frame(window, padding=20)
+        frame.pack(fill='both', expand=True)
+        text = f"Licencia #{iid} · {row['name']} · *****-{row['suffix']}\nReferencia: {row['reference'] or 'No indicada'}\nEstado XML: {row['xml_state'] or 'No indicado'}\nClasificación actual: {row['classification_source']}"
+        ttk.Label(frame, text=text, wraplength=600).pack(anchor='w', pady=10)
+        edition = tk.StringVar(value=row['edition'])
+        channel = tk.StringVar(value=row['channel'])
+        for label, var, values in [('Edición Windows', edition, EDITIONS), ('Tipo de licencia', channel, CHANNELS)]:
+            ttk.Label(frame, text=label).pack(anchor='w', pady=(8, 3))
+            ttk.Combobox(frame, textvariable=var, values=values, state='readonly', width=35).pack(anchor='w')
+        apply_reference = tk.BooleanVar(value=bool(row['reference']))
+        ttk.Checkbutton(frame, text='Aplicar a todas con esta referencia y recordar para futuras importaciones', variable=apply_reference,
+                        state='normal' if row['reference'] else 'disabled').pack(anchor='w', pady=14)
+        ttk.Label(frame, text='Use la clasificación de su proveedor. Un estado numérico o una clave por sí solos no indican Pro / Home / CMAR.', wraplength=600).pack(anchor='w')
+        def save():
+            try:
+                count = self.stock.set_classification(iid, edition.get(), channel.get(), apply_reference.get())
+                self.refresh()
+                self.footer.set(f'Clasificación guardada. Licencias actualizadas: {count}.')
+                window.destroy()
+            except Exception as e:
+                self.error(e)
+        ttk.Button(frame, text='Guardar clasificación', command=save).pack(anchor='w', pady=15)
 
     def toggle_stock(self):
         try:
@@ -406,7 +477,7 @@ class ServerApp:
         info = json.loads(row['info'])
         result = json.loads(row['result'])
         lines = [f"Asignación: {aid}", f"Licencia: #{row['license_id']} · {row['name']} · *****-{row['suffix']}",
-                 f"Estado: {row['state']}", f"Asignada: {local_date(row['created'])}", f"Actualizada: {local_date(row['updated'])}",
+                 f"Clasificación: {row['edition']} / {row['channel']} · Referencia: {row['reference']}", f"Estado: {row['state']}", f"Asignada: {local_date(row['created'])}", f"Actualizada: {local_date(row['updated'])}",
                  f"UUID: {row['machine']}", '', 'DATOS DEL EQUIPO']
         lines += [f'{k}: {v}' for k, v in info.items()]
         lines += ['', 'RESULTADO DE INSTALACIÓN'] + [f'{k}: {v}' for k, v in result.items()]
@@ -441,7 +512,7 @@ class ServerApp:
 
     def export_stock(self):
         rows = [self.stock_tree.item(iid)['values'] for iid in self.stock_tree.get_children()]
-        self.export_csv(['ID', 'XML', 'Ultimos5', 'Estado', 'Serie', 'Modelo', 'Actualizado'], rows)
+        self.export_csv(['ID', 'XML', 'Ultimos5', 'Edicion', 'Tipo', 'Referencia', 'Estado', 'Serie', 'Modelo', 'Actualizado'], rows)
 
     def export_installs(self):
         rows = []
@@ -449,11 +520,11 @@ class ServerApp:
             if self.matches(r, self.install_search.get(), self.install_state.get()):
                 i = json.loads(r['info'])
                 result = json.loads(r['result'])
-                rows.append([r['id'], r['license_id'], r['name'], r['suffix'], r['machine'], i.get('Serial'), i.get('Fabricante'),
+                rows.append([r['id'], r['license_id'], r['name'], r['suffix'], r['edition'], r['channel'], r['reference'], r['machine'], i.get('Serial'), i.get('Fabricante'),
                              i.get('Modelo'), i.get('Windows'), i.get('Version'), i.get('Build'), i.get('Tecnico'), i.get('IP'), r['state'],
                              local_date(r['created']), local_date(r['updated']), result.get('before_partial'), result.get('after_partial'),
                              result.get('license_status'), result.get('code'), result.get('error'), r['detail']])
-        self.export_csv(['Asignacion', 'Licencia', 'XML', 'Ultimos5', 'UUID', 'Serie', 'Fabricante', 'Modelo', 'Windows', 'Version', 'Build',
+        self.export_csv(['Asignacion', 'Licencia', 'XML', 'Ultimos5', 'Edicion', 'Tipo', 'Referencia', 'UUID', 'Serie', 'Fabricante', 'Modelo', 'Windows', 'Version', 'Build',
                          'Tecnico', 'IP', 'Estado', 'Asignada', 'Actualizada', 'ClaveAnteriorUltimos5', 'ClaveInstaladaUltimos5',
                          'EstadoWindows', 'Codigo', 'Error', 'Detalle'], rows)
 

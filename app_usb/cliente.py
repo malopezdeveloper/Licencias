@@ -29,13 +29,14 @@ def powershell(script):
     except ValueError: raise RuntimeError('Windows devolvio una respuesta no reconocida.') from None
 
 def info():
-    return powershell("""$ErrorActionPreference='Stop'
+    return powershell(r"""$ErrorActionPreference='Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $b=Get-CimInstance Win32_BIOS
 $c=Get-CimInstance Win32_ComputerSystem
 $o=Get-CimInstance Win32_OperatingSystem
 $u=Get-CimInstance Win32_ComputerSystemProduct
-@{machine="$($u.UUID)";info=@{Serial="$($b.SerialNumber)";Fabricante="$($c.Manufacturer)";Modelo="$($c.Model)";Windows="$($o.Caption)";Version="$($o.Version)";Build="$($o.BuildNumber)"}} | ConvertTo-Json -Compress
+$edition=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').EditionID
+@{machine="$($u.UUID)";edition="$edition";info=@{Serial="$($b.SerialNumber)";Fabricante="$($c.Manufacturer)";Modelo="$($c.Model)";Windows="$($o.Caption)";Version="$($o.Version)";Build="$($o.BuildNumber)"}} | ConvertTo-Json -Compress
 """)
 
 def install(key):
@@ -66,17 +67,33 @@ $result | ConvertTo-Json -Compress
 """
     return powershell(script.replace('KEY_VALUE',key).replace('APP_VALUE',APP_ID).replace('SUFFIX_VALUE',key[-5:]))
 
+def detected_edition(value):
+    # EditionID proviene del registro de Windows; no se deduce del tipo de clave.
+    return {'professional':'Pro', 'core':'Home', 'professionaln':'Pro N', 'coren':'Home N',
+            'coresinglelanguage':'Home Single Language', 'enterprise':'Enterprise', 'enterprisen':'Enterprise N',
+            'education':'Education', 'educationn':'Education N', 'professionaleducation':'Pro Education',
+            'professionalworkstation':'Pro for Workstations'}.get(str(value).casefold(), '')
+
 class Client:
     def __init__(self,root):
         self.root=root; self.q=queue.Queue(); self.running=False
-        root.title('PULSIA · Cliente de licencias'); root.geometry('760x540'); root.minsize(620,420)
+        root.title('PULSIA · Cliente de licencias'); root.geometry('820x610'); root.minsize(740,550)
         frame=ttk.Frame(root,padding=20); frame.pack(fill='both',expand=True)
-        ttk.Label(frame,text='PULSIA · Instalación CMAR',font=('Segoe UI',18,'bold')).pack(anchor='w')
+        ttk.Label(frame,text='PULSIA · Instalación de licencia',font=('Segoe UI',18,'bold')).pack(anchor='w')
         ttk.Label(frame,text='Licencia asignada desde el servidor de la red local.').pack(anchor='w',pady=(4,16))
         self.technician=tk.StringVar()
         tech_row=ttk.Frame(frame); tech_row.pack(fill='x',pady=6)
         ttk.Label(tech_row,text='Técnico (opcional):').pack(side='left')
         self.tech_entry=ttk.Entry(tech_row,textvariable=self.technician,width=35); self.tech_entry.pack(side='left',padx=8)
+        type_row=ttk.Frame(frame); type_row.pack(fill='x',pady=6)
+        self.edition=tk.StringVar(value='Automática (Windows)')
+        self.channel=tk.StringVar(value='Cualquiera')
+        ttk.Label(type_row,text='Edición:').pack(side='left')
+        self.edition_box=ttk.Combobox(type_row,textvariable=self.edition,values=('Automática (Windows)','Pro','Home','Pro N','Home N','Home Single Language','Enterprise','Enterprise N','Education','Education N','Pro Education','Pro for Workstations'),state='readonly',width=24)
+        self.edition_box.pack(side='left',padx=6)
+        ttk.Label(type_row,text='Tipo:').pack(side='left')
+        self.channel_box=ttk.Combobox(type_row,textvariable=self.channel,values=('Cualquiera','CMAR','OEM','Retail','Volumen MAK','Volumen KMS','Volumen'),state='readonly',width=16)
+        self.channel_box.pack(side='left',padx=6)
         self.status=tk.StringVar(value='Preparado. Compruebe config.json antes de empezar.')
         ttk.Label(frame,textvariable=self.status,wraplength=650).pack(anchor='w',pady=8)
         self.button=ttk.Button(frame,text='Solicitar e instalar licencia',command=self.start); self.button.pack(anchor='w',pady=8)
@@ -96,12 +113,15 @@ class Client:
                 self.status.set(text)
                 self.log.config(state='normal'); self.log.insert('end',text+'\n'); self.log.see('end'); self.log.config(state='disabled')
                 if kind=='done':
-                    self.running=False; self.button.config(state='normal'); self.tech_entry.config(state='normal'); self.progress.stop()
+                    self.running=False; self.button.config(state='normal'); self.tech_entry.config(state='normal'); self.edition_box.config(state='readonly'); self.channel_box.config(state='readonly'); self.progress.stop()
         except queue.Empty: pass
         self.root.after(100,self.poll)
     def start(self):
         self.running=True; self.button.config(state='disabled'); self.tech_entry.config(state='disabled'); self.progress.start()
         self.technician_value=self.technician.get().strip()[:100]
+        self.requested_edition=self.edition.get()
+        self.requested_channel=self.channel.get()
+        self.edition_box.config(state='disabled'); self.channel_box.config(state='disabled')
         threading.Thread(target=self.work,daemon=True).start()
     def work(self):
         assignment=None; installed=False
@@ -124,7 +144,7 @@ class Client:
                 try:
                     with opener.open(req,timeout=30) as response: return json.load(response)
                 except urllib.error.HTTPError as e:
-                    messages={401:'Token rechazado por el servidor.',409:'No hay licencias disponibles.',400:'El servidor rechazó la solicitud.'}
+                    messages={401:'Token rechazado por el servidor.',409:'No hay licencias disponibles para la edición y el tipo solicitados.',400:'Solicitud rechazada. Revise la edición y clasifique el stock en el servidor.'}
                     raise RuntimeError(messages.get(e.code,'El servidor devolvió un error HTTP.')) from None
                 except (urllib.error.URLError,TimeoutError,OSError):
                     raise RuntimeError('No se pudo conectar por HTTPS. Revise red, servidor y certificado.') from None
@@ -132,11 +152,20 @@ class Client:
             data=info(); machine=str(uuid.UUID(data['machine'])).upper()
             if machine in ('00000000-0000-0000-0000-000000000000','FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'): raise RuntimeError('UUID de firmware no válido.')
             data['machine']=machine
+            selected_edition=getattr(self,'requested_edition','Automática (Windows)')
+            selected_channel=getattr(self,'requested_channel','Cualquiera')
+            if selected_edition == 'Automática (Windows)':
+                selected_edition=detected_edition(data.get('edition',''))
+            if not selected_edition:
+                raise RuntimeError('No se reconoce la edición instalada. Seleccione una edición compatible antes de solicitar licencia.')
+            data['edition']=selected_edition
+            if selected_channel != 'Cualquiera': data['channel']=selected_channel
             data['info']['Tecnico']=self.technician_value
             self.emit('Equipo: '+data['info']['Modelo']+' · Serie: '+data['info']['Serial'])
             self.emit('Solicitando una licencia exclusiva al servidor...')
             assignment=api('/reserve',data)
             self.emit('Asignación: '+assignment['id'])
+            self.emit('Licencia: '+assignment.get('edition',selected_edition)+' / '+assignment.get('channel','Tipo no indicado'))
             raw=assignment['xml']
             if '<!DOCTYPE' in raw.upper() or '<!ENTITY' in raw.upper(): raise RuntimeError('XML no admitido.')
             xml=ET.fromstring(raw)

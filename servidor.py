@@ -15,6 +15,10 @@ import ssl
 import sys
 import uuid
 import xml.etree.ElementTree as ET
+import zipfile
+from pathlib import PurePosixPath
+
+from clasificacion import UNKNOWN, EDITIONS, CHANNELS, metadata, normalize_reference, edition_from_text
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('PULSIA_LICENSE_DATA', str(ROOT / 'datos'))).resolve()
@@ -80,6 +84,14 @@ class Stock:
             for name, definition in [('suffix', "TEXT NOT NULL DEFAULT ''"), ('enabled', 'INTEGER NOT NULL DEFAULT 1'), ('created', "TEXT NOT NULL DEFAULT ''")]:
                 if name not in existing:
                     c.execute(f'ALTER TABLE licenses ADD COLUMN {name} {definition}')
+            c.execute('CREATE TABLE IF NOT EXISTS classification_rules (reference TEXT PRIMARY KEY, edition TEXT NOT NULL, channel TEXT NOT NULL, updated TEXT NOT NULL)')
+            for name in ('edition', 'channel', 'reference', 'classification_source'):
+                if name not in existing:
+                    c.execute(f"ALTER TABLE licenses ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            for row in c.execute("SELECT id,xml FROM licenses WHERE classification_source='' ").fetchall():
+                values = self.classify(c, row['xml'])
+                c.execute('UPDATE licenses SET edition=?,channel=?,reference=?,classification_source=? WHERE id=?',
+                          (values['edition'], values['channel'], values['reference'], values['classification_source'], row['id']))
             if 'result' not in {r['name'] for r in c.execute('PRAGMA table_info(assignments)')}:
                 c.execute("ALTER TABLE assignments ADD COLUMN result TEXT NOT NULL DEFAULT '{}'")
             for row in c.execute("SELECT id,xml FROM licenses WHERE suffix='' ").fetchall():
@@ -125,37 +137,141 @@ class Stock:
         c.execute('INSERT INTO events(date,assignment,action,detail) VALUES(?,?,?,?)',
                   (now(), assignment, action, detail))
 
+    @staticmethod
+    def classify(c, xml):
+        values = metadata(xml)
+        rule = c.execute('SELECT edition,channel FROM classification_rules WHERE reference=?', (values['reference'],)).fetchone()
+        if rule:
+            values.update(dict(rule))
+            values['classification_source'] = 'Regla por referencia'
+        return values
+
     def import_files(self, paths):
+        """Mezcla de XML/ZIP/carpetas; límites al descomprimir, sin extraer al disco."""
         results = []
-        for path in paths:
-            path = Path(path)
+        count = 0
+        total_bytes = 0
+        seen_directories = set()
+
+        def error(name, message):
+            results.append((str(name), 'error: ' + message))
+
+        def import_one(name, raw):
+            nonlocal count, total_bytes
+            count += 1
+            total_bytes += len(raw)
+            if count > 10000 or total_bytes > 256 * 1024 * 1024:
+                raise ValueError('Límite de importación: 10.000 XML o 256 MiB descomprimidos. Divida el lote.')
             try:
-                if path.stem.upper().endswith('BURN'):
+                if Path(name).stem.upper().endswith('BURN'):
                     raise ValueError('BURN omitido: la licencia figura como consumida.')
-                with path.open('rb') as f:
-                    raw = f.read(1048577)
                 xml, key = parse_xml(raw)
                 with self.connection() as c:
-                    cur = c.execute('INSERT OR IGNORE INTO licenses(name,xml,fingerprint,suffix,created) VALUES(?,?,?,?,?)',
-                                    (path.name, xml, hashlib.sha256(key.encode()).hexdigest(), key[-5:], now()))
+                    values = self.classify(c, xml)
+                    cur = c.execute('INSERT OR IGNORE INTO licenses(name,xml,fingerprint,suffix,created,edition,channel,reference,classification_source) VALUES(?,?,?,?,?,?,?,?,?)',
+                                    (Path(name).name, xml, hashlib.sha256(key.encode()).hexdigest(), key[-5:], now(),
+                                     values['edition'], values['channel'], values['reference'], values['classification_source']))
                     if cur.rowcount:
-                        self.event(c, '', 'importacion', f'Licencia #{cur.lastrowid}; XML: {path.name}')
-                    results.append((path.name, 'importado' if cur.rowcount else 'duplicado'))
-            except (ValueError, ET.ParseError, OSError) as e:
-                # No incluir el contenido/XML ni excepciones que puedan revelar claves.
-                results.append((path.name, 'error: ' + (str(e) if isinstance(e, ValueError) and not isinstance(e, UnicodeError) else 'No se pudo leer el XML.')))
+                        self.event(c, '', 'importacion', f"Licencia #{cur.lastrowid}; {values['edition']} / {values['channel']}")
+                    results.append((str(name), 'importado' if cur.rowcount else 'duplicado'))
+            except (ValueError, ET.ParseError) as e:
+                error(name, str(e) if isinstance(e, ValueError) and not isinstance(e, UnicodeError) else 'XML no válido.')
+
+        def visit(path):
+            if path.is_symlink():
+                error(path.name, 'No se siguen enlaces simbólicos.')
+                return
+            if path.is_dir():
+                resolved = path.resolve()
+                if resolved in seen_directories:
+                    return
+                seen_directories.add(resolved)
+                try:
+                    for child in sorted(path.iterdir()):
+                        visit(child)
+                except OSError:
+                    error(path.name, 'No se pudo leer la carpeta.')
+            elif path.suffix.lower() == '.xml':
+                try:
+                    with path.open('rb') as f:
+                        import_one(path.name, f.read(1048577))
+                except OSError:
+                    error(path.name, 'No se pudo leer el archivo.')
+            elif path.suffix.lower() == '.zip':
+                try:
+                    with zipfile.ZipFile(path) as archive:
+                        members = archive.infolist()
+                        if len(members) > 20000:
+                            raise ValueError('ZIP con demasiadas entradas (máximo 20.000).')
+                        for member in members:
+                            name = member.filename.replace('\\', '/')
+                            parts = PurePosixPath(name)
+                            if member.is_dir() or parts.suffix.lower() != '.xml':
+                                continue
+                            if parts.is_absolute() or '..' in parts.parts or ':' in name or ((member.external_attr >> 16) & 0o170000) == 0o120000:
+                                error(path.name + '/' + name, 'Ruta ZIP no admitida.')
+                                continue
+                            if member.flag_bits & 1 or member.file_size > 1048576:
+                                error(path.name + '/' + name, 'XML cifrado o demasiado grande.')
+                                continue
+                            try:
+                                with archive.open(member) as f:
+                                    import_one(path.name + '/' + name, f.read(1048577))
+                            except (OSError, RuntimeError, zipfile.BadZipFile, NotImplementedError):
+                                error(path.name + '/' + name, 'No se pudo leer esta entrada del ZIP.')
+                except (OSError, zipfile.BadZipFile, RuntimeError, ValueError) as e:
+                    if isinstance(e, ValueError) and str(e).startswith('Límite de importación'):
+                        raise
+                    error(path.name, 'ZIP no válido o no admitido.')
+            # Otros archivos y ZIP anidados dentro de ZIP no se importan.
+
+        try:
+            for item in paths:
+                visit(Path(item))
+        except ValueError as e:
+            error('Lote', str(e))
         return results
+
+    def set_classification(self, license_id, edition, channel, apply_reference=False):
+        if edition not in EDITIONS or channel not in CHANNELS:
+            raise ValueError('Edición o tipo no válido.')
+        with self.connection() as c:
+            c.execute('BEGIN IMMEDIATE')
+            row = c.execute('SELECT reference FROM licenses WHERE id=?', (license_id,)).fetchone()
+            if not row:
+                raise ValueError('Licencia inexistente.')
+            if apply_reference:
+                if not row['reference']:
+                    raise ValueError('El XML no tiene referencia; clasifique esta licencia individualmente.')
+                c.execute('INSERT INTO classification_rules(reference,edition,channel,updated) VALUES(?,?,?,?) ON CONFLICT(reference) DO UPDATE SET edition=excluded.edition,channel=excluded.channel,updated=excluded.updated',
+                          (row['reference'], edition, channel, now()))
+                cur = c.execute("UPDATE licenses SET edition=?,channel=?,classification_source='Regla por referencia' WHERE reference=?",
+                                (edition, channel, row['reference']))
+            else:
+                cur = c.execute("UPDATE licenses SET edition=?,channel=?,classification_source='Manual' WHERE id=?", (edition, channel, license_id))
+            self.event(c, '', 'clasificacion', f"Licencia #{license_id}; {edition} / {channel}; actualizadas: {cur.rowcount}")
+            return cur.rowcount
+
+    def license_details(self, license_id):
+        with self.connection() as c:
+            row = c.execute('SELECT * FROM licenses WHERE id=?', (license_id,)).fetchone()
+            if not row:
+                raise ValueError('Licencia inexistente.')
+            result = dict(row)
+            result['xml_state'] = metadata(result.pop('xml'))['xml_state']
+            result.pop('fingerprint', None)
+            return result
 
     def inventory(self):
         with self.connection() as c:
-            return [dict(r) for r in c.execute('''SELECT l.id,l.name,l.suffix,l.enabled,l.created,
+            return [dict(r) for r in c.execute('''SELECT l.id,l.name,l.suffix,l.enabled,l.created,l.edition,l.channel,l.reference,l.classification_source,
                 a.id AS assignment,a.machine,a.info,a.updated,
-                CASE WHEN a.id IS NOT NULL THEN a.state WHEN l.enabled=0 THEN 'retirada' ELSE 'disponible' END AS state
+                CASE WHEN a.id IS NOT NULL THEN a.state WHEN l.enabled=0 THEN 'retirada' WHEN l.edition='Sin identificar' OR l.channel='Sin identificar' THEN 'sin identificar' ELSE 'disponible' END AS state
                 FROM licenses l LEFT JOIN assignments a ON a.license_id=l.id AND a.state!='baja' ORDER BY l.id''')]
 
     def assignments(self):
         with self.connection() as c:
-            return [dict(r) for r in c.execute('''SELECT a.*,l.name,l.suffix FROM assignments a
+            return [dict(r) for r in c.execute('''SELECT a.*,l.name,l.suffix,l.edition,l.channel,l.reference FROM assignments a
                 JOIN licenses l ON l.id=a.license_id ORDER BY a.created DESC,a.id''')]
 
     def history(self, assignment=None):
@@ -183,17 +299,39 @@ class Stock:
         info['IP'] = ip
         with self.connection() as c:
             c.execute('BEGIN IMMEDIATE')
-            row = c.execute("SELECT a.id,a.state,l.xml,l.name FROM assignments a JOIN licenses l ON l.id=a.license_id WHERE a.machine=? AND a.state!='baja'", (machine,)).fetchone()
+            row = c.execute("SELECT a.id,a.state,l.xml,l.name,l.edition,l.channel FROM assignments a JOIN licenses l ON l.id=a.license_id WHERE a.machine=? AND a.state!='baja'", (machine,)).fetchone()
             if row:
+                if row['edition'] == UNKNOWN or row['channel'] == UNKNOWN:
+                    raise ValueError('Clasifique primero la licencia ya asignada a este equipo.')
+                if data.get('edition') not in (None, row['edition']) or data.get('channel') not in (None, row['channel']):
+                    raise ValueError('El equipo ya tiene otra asignación activa. Revísela antes de cambiar de edición o tipo.')
                 return dict(row)
-            lic = c.execute("SELECT id,name,xml FROM licenses WHERE enabled=1 AND id NOT IN (SELECT license_id FROM assignments WHERE state!='baja') ORDER BY id LIMIT 1").fetchone()
+            edition = data.get('edition')
+            if edition is not None and edition not in EDITIONS[:-1]:
+                raise ValueError('Seleccione una edición identificada.')
+            if not edition:
+                edition = edition_from_text(raw_info.get('Windows', ''))
+            if not edition or edition == UNKNOWN:
+                editions = [r[0] for r in c.execute("SELECT DISTINCT edition FROM licenses WHERE enabled=1 AND edition!=?", (UNKNOWN,))]
+                if len(editions) != 1:
+                    raise ValueError('Indique la edición solicitada; clasifique antes el stock sin identificar.')
+                edition = editions[0]
+            channel = data.get('channel')
+            if channel is not None and channel not in CHANNELS[:-1]:
+                raise ValueError('Tipo de licencia no válido.')
+            query = "SELECT id,name,xml,edition,channel FROM licenses WHERE enabled=1 AND edition=? AND channel!=? AND id NOT IN (SELECT license_id FROM assignments WHERE state!='baja')"
+            params = [edition, UNKNOWN]
+            if channel:
+                query += ' AND channel=?'
+                params.append(channel)
+            lic = c.execute(query + ' ORDER BY id LIMIT 1', params).fetchone()
             if not lic:
                 return None
             aid = secrets.token_hex(24)
             c.execute('INSERT INTO assignments(id,license_id,machine,info,state,created,updated) VALUES(?,?,?,?,?,?,?)',
                       (aid, lic['id'], machine, json.dumps(info, ensure_ascii=False), 'pendiente', now(), now()))
             self.event(c, aid, 'asignada', f'Equipo {machine}; IP {ip}')
-            return {'id': aid, 'state': 'pendiente', 'xml': lic['xml'], 'name': lic['name']}
+            return {'id': aid, 'state': 'pendiente', 'xml': lic['xml'], 'name': lic['name'], 'edition': lic['edition'], 'channel': lic['channel']}
 
     def report(self, data):
         machine = validate_machine(data.get('machine'))
