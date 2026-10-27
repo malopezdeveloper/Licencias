@@ -145,6 +145,10 @@ class HttpsTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as rejected:
             post('/reserve', {'technician_id': self.technician_id, 'machine': machine()}, credential='wrong')
         self.assertEqual(rejected.exception.code, 401)
+        stock = post('/stock', {})
+        self.assertEqual(stock['available'],5)
+        self.assertEqual(stock['groups'],[{'edition':'Pro','channel':'OEM','available':5}])
+        self.assertEqual(self.stock.assignments(),[])
         users = post('/technicians', {})['technicians']
         self.assertEqual(users, [{'id': self.technician_id, 'name': 'Técnico de prueba'}])
         with self.assertRaises(urllib.error.HTTPError) as missing_technician:
@@ -157,6 +161,7 @@ class HttpsTests(unittest.TestCase):
         self.assertTrue(post('/report', {'machine': m, 'id': assigned['id'], 'state': 'usada'})['ok'])
         row = self.stock.assignments()[0]
         self.assertEqual(row['state'], 'usada')
+        self.assertEqual(post('/stock', {})['available'],4)
         self.assertEqual(json.loads(row['info'])['IP'], '127.0.0.1')
         wrong_context = ssl.create_default_context()
         with self.assertRaises(urllib.error.URLError):

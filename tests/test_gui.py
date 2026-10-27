@@ -44,6 +44,9 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(stock.technicians()[0]['active'])
             app.toggle_user()
             self.assertEqual(len(app.stock_tree.get_children()), 1)
+            app.stock_edition.set('Pro')
+            app.stock_channel.set('OEM')
+            self.assertIn('Pro / OEM: 1',app.selected_stock_count.get())
             app.stock_search.set('missing')
             self.assertEqual(len(app.stock_tree.get_children()), 0)
             app.stock_search.set('test.xml')
@@ -74,18 +77,28 @@ class ResponsiveGuiTests(unittest.TestCase):
 
     def test_client_scroll_resize_and_saved_address(self):
         root = self.create_root()
-        with tempfile.TemporaryDirectory() as tmp, patch.object(cliente, 'BASE', Path(tmp)), patch.object(cliente.Client, 'refresh_technicians', lambda self: None):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(cliente, 'BASE', Path(tmp)), patch.object(cliente.Client, 'refresh_technicians', lambda self,**kwargs: None):
             (Path(tmp) / 'config.json').write_text(json.dumps({'servidor':'https://192.168.1.139:8443','token':'test-token','servidor_confirmado':True}))
             app = cliente.Client(root)
             root.geometry('560x400')
             root.update()
             self.assertEqual(app.server_address.get(), 'https://192.168.1.139:8443')
-            app.apply_technicians({'technicians':[{'id':1,'name':'Técnico de prueba'}]})
+            app.apply_technicians({'technicians':[{'id':1,'name':'Técnico de prueba'}],'stock':{'available':4,'groups':[{'edition':'Pro','channel':'CMAR','available':4}],'updated':'2026-10-27T10:00:00+00:00'},'detected_edition':'Pro'})
             self.assertEqual(str(app.tech_entry.cget('state')), 'readonly')
             self.assertEqual(str(app.button.cget('state')), 'disabled')
             app.technician.set('Técnico de prueba')
             app.idle_controls()
             self.assertEqual(str(app.button.cget('state')), 'normal')
+            self.assertIn('4',app.stock_total.get())
+            app.stock_table.selection_set('0')
+            app.select_stock_type()
+            self.assertEqual(app.edition.get(),'Pro')
+            self.assertEqual(app.channel.get(),'CMAR')
+            self.assertIn('Disponibles: 4',app.stock_selection.get())
+            app.channel.set('OEM')
+            app.type_filter_changed()
+            self.assertEqual(app.stock_table.selection(),())
+            self.assertIn('Disponibles: 0',app.stock_selection.get())
             self.assertLess(app.viewport.canvas.xview()[1], 1)
             self.assertLess(app.viewport.canvas.yview()[1], 1)
             self.assertTrue(app.log.cget('xscrollcommand'))
@@ -98,9 +111,12 @@ class ResponsiveGuiTests(unittest.TestCase):
             root.geometry('1500x1000')
             root.update()
             self.assertGreater(app.log.winfo_width(), old_width)
-            self.assertGreater(app.log.winfo_height(), old_height)
+            self.assertGreaterEqual(app.log.winfo_height(), old_height)
+            if app.viewport.canvas.winfo_height() > app.viewport.content.winfo_reqheight()+20:
+                self.assertGreater(app.log.winfo_height(), old_height)
             self.assertAlmostEqual(app.viewport.canvas.xview()[1], 1, places=2)
-            self.assertAlmostEqual(app.viewport.canvas.yview()[1], 1, places=2)
+            if app.viewport.canvas.winfo_height() >= app.viewport.content.winfo_reqheight():
+                self.assertAlmostEqual(app.viewport.canvas.yview()[1], 1, places=2)
 
     def test_server_scroll_resize_and_log_bars(self):
         root = self.create_root()

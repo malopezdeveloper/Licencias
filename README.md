@@ -1,6 +1,6 @@
 # PULSIA · Servidor de licencias CMAR
 
-Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.6.
+Servidor LAN con **interfaz gráfica de escritorio**, stock XML centralizado y un cliente portable Windows que se ejecuta desde el pendrive. Versión 0.7.
 
 ## Qué puedes hacer desde la interfaz
 
@@ -76,7 +76,7 @@ En [Actions](https://github.com/malopezdeveloper/Licencias/actions), el flujo **
 
 ## Técnicos proporcionados por el servidor
 
-El técnico es obligatorio y **no se puede escribir libremente** en el cliente. Al abrir el cliente con una dirección confirmada, o al cambiarla, se conecta por HTTPS y obtiene los usuarios activos del servidor. También hay un botón **Conectar / actualizar técnicos**. El botón de instalación se habilita después de seleccionar uno.
+El técnico es obligatorio y **no se puede escribir libremente** en el cliente. Al abrir el cliente con una dirección confirmada, o al cambiarla, se conecta por HTTPS y obtiene los usuarios activos del servidor. También hay un botón **Actualizar técnicos y stock**. El botón de instalación se habilita después de seleccionar uno.
 
 Desde **Usuarios / técnicos** puedes añadir usuarios, cambiar sus nombres y activarlos/desactivarlos. El servidor valida el ID del técnico activo en la misma transacción que reserva la licencia: nombres inventados, IDs desconocidos, usuarios inactivos y clientes antiguos que no envían selección se rechazan sin consumir stock. Una lista antigua del USB no permite usar un técnico que ya se haya desactivado.
 
@@ -85,6 +85,18 @@ Cada instalación guarda el ID estable y el nombre del técnico que inicia o ret
 La lista es un catálogo para identificar al operador, no un inicio de sesión con contraseña. Su modificación se hace en el servidor, no desde la API del pendrive. Si no hay usuarios activos o falla la conexión, el cliente no permite escribir otro nombre ni iniciar una instalación.
 
 **Al actualizar a v0.6:** sustituye el código del servidor conservando `datos/`, crea los usuarios y recompila/prepara los USB. Los registros anteriores se conservan con su nombre histórico; no se crean usuarios automáticamente a partir de esos nombres. Debes actualizar tanto el servidor como los clientes.
+
+## Disponibles y selección de tipo en ambas aplicaciones
+
+El cliente muestra **Disponibles totales**, una tabla **Edición Windows / Tipo de licencia / Disponibles** y el número para la selección actual. Puedes elegir en los desplegables o pulsar una fila de la tabla, por ejemplo **Pro / CMAR**. La edición automática utiliza la edición del Windows instalado para mostrar sus existencias; si no puede detectarse, selecciona una edición explícita.
+
+El stock se consulta junto con los técnicos al conectar, con **Actualizar técnicos y stock**, cada 15 segundos mientras la conexión sea válida y al finalizar cada intento de instalación. Se muestra la hora de actualización. No se actualiza mientras instala o hay un diálogo abierto. Si falla la conexión, se muestra **—**, se deshabilita la solicitud y se pide reconectar; no se presenta una cifra antigua como disponible. Los técnicos siguen siendo obligatorios y solo se seleccionan de la lista del servidor.
+
+En el servidor, el contador general y **Stock por tipo** muestran las cantidades; **Stock de licencias** también muestra los disponibles para los filtros de edición/tipo seleccionados y el total del servidor. Seleccionar una fila en el resumen filtra ese tipo.
+
+Solo cuentan licencias habilitadas, clasificadas y sin asignación activa. Pendientes, usadas, revisión, retiradas y sin identificar no suman disponibles. Consultar cantidades no reserva ni entrega claves. Otro técnico puede consumir una licencia después de consultar: la asignación definitiva sigue siendo transaccional. Si se agota un tipo no se sustituye por otro. Una cifra cero no impide reintentar desde un PC que ya tenga su propia asignación bloqueada.
+
+Actualiza el servidor y vuelve a compilar/preparar los USB para esta versión. La consulta HTTPS del stock requiere la credencial del cliente y solo devuelve cantidades por edición/tipo, sin claves ni datos de equipos.
 
 ## Datos y copias de seguridad
 

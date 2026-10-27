@@ -77,7 +77,7 @@ class TechnicianTests(unittest.TestCase):
     def test_client_only_loads_server_response(self):
         app = cliente.Client.__new__(cliente.Client)
         app.q = queue.Queue()
-        with patch.object(cliente, 'create_api', return_value=lambda route, data: {'technicians':[{'id':7,'name':'Servidor'}]}):
+        with patch.object(cliente, 'create_api', return_value=lambda route, data: {'technicians':[{'id':7,'name':'Servidor'}]} if route=='/technicians' else {'available':0,'groups':[],'updated':'2026-10-27T10:00:00+00:00'}):
             app.users_worker({})
         kind, data = app.q.get_nowait()
         self.assertEqual(kind, 'users')

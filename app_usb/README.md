@@ -37,6 +37,12 @@ La ventana y el registro tienen barras verticales y horizontales. Al maximizar, 
 
 ## Técnicos del servidor
 
-El campo Técnico es un desplegable de solo selección. Se carga desde el servidor al conectar y puede renovarse con **Conectar / actualizar técnicos**. Debes seleccionar un usuario activo antes de instalar. No admite escritura libre ni usuarios locales del pendrive. Si el servidor no tiene usuarios, créalos en **Usuarios / técnicos**; si no hay conexión, corrígela antes de continuar.
+El campo Técnico es un desplegable de solo selección. Se carga desde el servidor al conectar y puede renovarse con **Actualizar técnicos y stock**. Debes seleccionar un usuario activo antes de instalar. No admite escritura libre ni usuarios locales del pendrive. Si el servidor no tiene usuarios, créalos en **Usuarios / técnicos**; si no hay conexión, corrígela antes de continuar.
 
 El servidor valida la selección al reservar. Desactivar un usuario impide que inicie nuevas operaciones, aunque aparezca en una lista cargada previamente. Actualiza también el servidor al utilizar este cliente.
+
+## Disponibles por edición y tipo
+
+El cliente muestra el total y una tabla con las existencias por edición Windows y tipo de licencia. Pulsa una fila para seleccionar esa combinación o usa los desplegables: el contador de selección muestra cuántas quedan. La consulta se renueva al conectar, con **Actualizar técnicos y stock**, cada 15 segundos con conexión válida y después de instalar o fallar.
+
+El dato es informativo hasta que el servidor asigne la licencia de forma exclusiva. Pendientes, usadas, en revisión, retiradas y sin identificar se excluyen. Si no hay conexión no se admite una nueva solicitud hasta actualizar correctamente. Puedes reintentar una asignación existente aunque el stock libre de ese tipo sea cero. Se necesita el servidor actualizado.

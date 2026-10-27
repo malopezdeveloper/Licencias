@@ -45,7 +45,7 @@ class ServerApp:
         self.inventory_rows = []
         self.assignment_rows = []
         self.event_rows = []
-        self.root.title('PULSIA · Servidor de licencias · v0.6')
+        self.root.title('PULSIA · Servidor de licencias · v0.7')
         self.root.geometry('1220x800')
         self.root.minsize(640, 420)
         self.root.configure(bg='#eef2f6')
@@ -168,6 +168,8 @@ class ServerApp:
             ttk.Label(filters, text=label).pack(side='left', padx=(0, 7))
             ttk.Combobox(filters, textvariable=var, values=values, state='readonly', width=23).pack(side='left', padx=(0, 12))
             var.trace_add('write', lambda *_: self.render())
+        self.selected_stock_count = tk.StringVar(value='Disponibles para el tipo seleccionado: —')
+        ttk.Label(self.stock_tab, textvariable=self.selected_stock_count, font=('Segoe UI', 11, 'bold')).pack(fill='x', pady=5)
         commands = [('Importar XML / ZIP', self.import_xml), ('Importar carpeta', self.import_folder),
                     ('Ver / clasificar licencia', self.classify_license), ('Retirar / habilitar', self.toggle_stock),
                     ('Ver instalación', self.stock_install), ('Exportar CSV', self.export_stock), ('Copia de seguridad', self.backup)]
@@ -443,6 +445,9 @@ class ServerApp:
     def render(self):
         if not hasattr(self, 'install_search'):
             return
+        total_available = sum(r['state'] == 'disponible' for r in self.inventory_rows)
+        selected_available = sum(r['state'] == 'disponible' and self.stock_edition.get() in ('todas', r['edition']) and self.stock_channel.get() in ('todos', r['channel']) for r in self.inventory_rows)
+        self.selected_stock_count.set(f'Disponibles · {self.stock_edition.get()} / {self.stock_channel.get()}: {selected_available}    |    Total servidor: {total_available}')
         stock_rows = []
         for r in self.inventory_rows:
             if self.matches(r, self.stock_search.get(), self.stock_state.get()) and self.stock_edition.get() in ('todas', r['edition']) and self.stock_channel.get() in ('todos', r['channel']):

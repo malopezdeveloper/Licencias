@@ -1,5 +1,6 @@
 """Cliente USB PULSIA. Se compila en Windows con COMPILAR.bat."""
 import ctypes
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -168,17 +169,41 @@ def create_api(config):
         try:
             with opener.open(req,timeout=30) as response: return json.load(response)
         except urllib.error.HTTPError as e:
-            messages={401:'Token rechazado por el servidor.',409:'No hay licencias disponibles para la edición y el tipo solicitados.',400:'Solicitud rechazada. Revise la edición y clasifique el stock en el servidor.',422:'El técnico no está disponible. Actualice la lista y seleccione un usuario activo.'}
+            messages={404:'Actualice el servidor: este cliente necesita las consultas de técnicos y stock.',401:'Token rechazado por el servidor.',409:'No hay licencias disponibles para la edición y el tipo solicitados.',400:'Solicitud rechazada. Revise la edición y clasifique el stock en el servidor.',422:'El técnico no está disponible. Actualice la lista y seleccione un usuario activo.'}
             raise RuntimeError(messages.get(e.code,'El servidor devolvió un error HTTP.')) from None
         except (urllib.error.URLError,TimeoutError,OSError):
             raise RuntimeError('No se pudo conectar por HTTPS. Revise red, servidor y certificado.') from None
     return api
 
 
+def validate_stock(payload):
+    if not isinstance(payload, dict) or type(payload.get('available')) is not int or payload['available'] < 0 or not isinstance(payload.get('groups'),list):
+        raise RuntimeError('Resumen de stock no válido recibido del servidor.')
+    seen=set()
+    for row in payload['groups']:
+        if not isinstance(row,dict) or not isinstance(row.get('edition'),str) or not row['edition'] or not isinstance(row.get('channel'),str) or not row['channel'] or type(row.get('available')) is not int or row['available'] < 0:
+            raise RuntimeError('Resumen de stock no válido recibido del servidor.')
+        pair=(row['edition'],row['channel'])
+        if pair in seen: raise RuntimeError('El servidor devolvió tipos de licencia duplicados.')
+        seen.add(pair)
+    if sum(row['available'] for row in payload['groups']) != payload['available']:
+        raise RuntimeError('El total de stock no coincide con sus tipos de licencia.')
+    return payload
+
+
+def windows_edition_for_stock():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows NT\CurrentVersion') as key:
+            return detected_edition(winreg.QueryValueEx(key,'EditionID')[0])
+    except (ImportError,OSError):
+        return ''
+
+
 class Client:
     def __init__(self,root):
-        self.root=root; self.q=queue.Queue(); self.running=False; self.loading_users=False; self.technicians={}
-        root.title('PULSIA · Cliente de licencias'); root.geometry('900x700'); root.minsize(540,380)
+        self.root=root; self.q=queue.Queue(); self.running=False; self.loading_users=False; self.technicians={}; self.stock_ready=False; self.stock_rows=[]; self.detected_stock_edition=''
+        root.title('PULSIA · Cliente de licencias'); root.geometry('960x850'); root.minsize(540,380)
         self.viewport=ScrollFrame(root,min_width=720)
         self.viewport.pack(fill='both',expand=True)
         frame=ttk.Frame(self.viewport.content,padding=20); frame.pack(fill='both',expand=True)
@@ -197,7 +222,7 @@ class Client:
         ttk.Label(tech_row,text='Técnico:').pack(side='left')
         self.tech_entry=ttk.Combobox(tech_row,textvariable=self.technician,width=35,state='readonly'); self.tech_entry.pack(side='left',padx=8)
         self.tech_entry.bind('<<ComboboxSelected>>',lambda _:self.idle_controls())
-        self.refresh_users_button=ttk.Button(tech_row,text='Conectar / actualizar técnicos',command=self.refresh_technicians)
+        self.refresh_users_button=ttk.Button(tech_row,text='Actualizar técnicos y stock',command=self.refresh_technicians)
         self.refresh_users_button.pack(side='left',padx=6)
         type_row=ttk.Frame(frame); type_row.pack(fill='x',pady=6)
         self.edition=tk.StringVar(value='Automática (Windows)')
@@ -208,6 +233,28 @@ class Client:
         ttk.Label(type_row,text='Tipo:').pack(side='left')
         self.channel_box=ttk.Combobox(type_row,textvariable=self.channel,values=('Cualquiera','CMAR','OEM','Retail','Volumen MAK','Volumen KMS','Volumen'),state='readonly',width=16)
         self.channel_box.pack(side='left',padx=6)
+        self.edition_box.bind('<<ComboboxSelected>>',lambda _:self.type_filter_changed())
+        self.channel_box.bind('<<ComboboxSelected>>',lambda _:self.type_filter_changed())
+        stock_frame=ttk.LabelFrame(frame,text='Licencias disponibles en el servidor',padding=8)
+        stock_frame.pack(fill='x',pady=8)
+        self.stock_total=tk.StringVar(value='Disponibles totales: —')
+        self.stock_selection=tk.StringVar(value='Seleccione edición y tipo para consultar cuántas quedan.')
+        self.stock_time=tk.StringVar(value='Stock sin consultar')
+        ttk.Label(stock_frame,textvariable=self.stock_total,font=('Segoe UI',12,'bold')).pack(anchor='w')
+        self.stock_selection_label=ttk.Label(stock_frame,textvariable=self.stock_selection,wraplength=650)
+        self.stock_selection_label.pack(fill='x',pady=3)
+        table_frame=ttk.Frame(stock_frame); table_frame.pack(fill='x',pady=4)
+        self.stock_table=ttk.Treeview(table_frame,columns=('edition','channel','available'),show='headings',height=4,selectmode='browse')
+        for key,title,width in [('edition','Edición Windows',230),('channel','Tipo de licencia',200),('available','Disponibles',110)]:
+            self.stock_table.heading(key,text=title); self.stock_table.column(key,width=width,minwidth=80,stretch=True)
+        vs=ttk.Scrollbar(table_frame,orient='vertical',command=self.stock_table.yview)
+        hs=ttk.Scrollbar(table_frame,orient='horizontal',command=self.stock_table.xview)
+        self.stock_table.configure(yscrollcommand=vs.set,xscrollcommand=hs.set)
+        self.stock_table.grid(row=0,column=0,sticky='nsew'); vs.grid(row=0,column=1,sticky='ns'); hs.grid(row=1,column=0,sticky='ew')
+        table_frame.columnconfigure(0,weight=1); table_frame.rowconfigure(0,weight=1)
+        self.stock_table.bind('<<TreeviewSelect>>',self.select_stock_type)
+        self.stock_time_label=ttk.Label(stock_frame,textvariable=self.stock_time,wraplength=650)
+        self.stock_time_label.pack(fill='x')
         self.status=tk.StringVar(value='Preparado. Configure el servidor para empezar.')
         self.status_label=ttk.Label(frame,textvariable=self.status,wraplength=650)
         self.status_label.pack(fill='x',pady=8)
@@ -217,9 +264,10 @@ class Client:
         log_frame.pack(fill='both',expand=True)
         self.note_label=ttk.Label(frame,text='Instala la clave y verifica su sufijo. No ejecuta la activación de Windows.',wraplength=650)
         self.note_label.pack(fill='x',pady=(10,0))
-        frame.bind('<Configure>',lambda e:[label.configure(wraplength=max(300,e.width-40)) for label in (self.status_label,self.note_label)])
+        frame.bind('<Configure>',lambda e:[label.configure(wraplength=max(300,e.width-40)) for label in (self.status_label,self.note_label,self.stock_selection_label,self.stock_time_label)])
         root.protocol('WM_DELETE_WINDOW',self.close); root.after(100,self.poll)
         root.after_idle(self.first_server)
+        root.after(15000,self.auto_refresh_stock)
     def first_server(self):
         try:
             config=load_config()
@@ -252,6 +300,9 @@ class Client:
             self.technicians.clear()
             self.technician.set('')
             self.tech_entry.configure(values=())
+            self.stock_ready=False
+            self.stock_rows=[]
+            self.update_stock_labels()
             self.status.set('Servidor guardado. Conectando para obtener los técnicos...')
             self.refresh_technicians()
         except (ValueError,OSError) as e:
@@ -260,14 +311,14 @@ class Client:
 
     def idle_controls(self):
         busy=self.running or self.loading_users
-        self.button.config(state='normal' if not busy and self.technician.get() in self.technicians else 'disabled')
+        self.button.config(state='normal' if not busy and self.stock_ready and self.technician.get() in self.technicians else 'disabled')
         self.tech_entry.config(state='disabled' if busy else 'readonly')
         self.server_button.config(state='disabled' if busy else 'normal')
         self.refresh_users_button.config(state='disabled' if busy else 'normal')
         self.edition_box.config(state='disabled' if self.running else 'readonly')
         self.channel_box.config(state='disabled' if self.running else 'readonly')
 
-    def refresh_technicians(self):
+    def refresh_technicians(self,quiet=False):
         if self.running or self.loading_users:
             return
         try:
@@ -277,32 +328,93 @@ class Client:
                 return
             self.loading_users=True
             self.idle_controls()
-            self.status.set('Conectando al servidor para obtener los técnicos...')
-            threading.Thread(target=self.users_worker,args=(dict(config),),daemon=True).start()
+            if not quiet:self.status.set('Consultando técnicos y stock del servidor...')
+            threading.Thread(target=self.users_worker,args=(dict(config),quiet),daemon=True).start()
         except (ValueError,OSError) as e:
             self.loading_users=False
             self.idle_controls()
             self.status.set('No se pudo leer la configuración: '+str(e))
 
-    def users_worker(self,config):
+    def users_worker(self,config,quiet=False):
         try:
-            result=create_api(config)('/technicians',{})
+            api=create_api(config)
+            result=api('/technicians',{})
             rows=result.get('technicians')
             if not isinstance(rows,list) or any(not isinstance(r,dict) or type(r.get('id')) is not int or not isinstance(r.get('name'),str) or not r['name'].strip() for r in rows):
                 raise RuntimeError('Lista de técnicos no válida recibida del servidor.')
-            self.q.put(('users',{'technicians':rows}))
+            stock=validate_stock(api('/stock',{}))
+            self.q.put(('users',{'technicians':rows,'stock':stock,'detected_edition':windows_edition_for_stock(),'quiet':quiet}))
         except Exception as e:
             message=str(e) if isinstance(e,RuntimeError) else 'No se pudo obtener la lista de técnicos. Revise la configuración y el servidor.'
-            self.q.put(('users',{'technicians':[],'error':message}))
+            self.q.put(('users',{'technicians':[],'error':message,'quiet':quiet}))
 
     def apply_technicians(self,result):
         previous=self.technicians.get(self.technician.get())
         self.technicians={r['name']:r['id'] for r in result['technicians']}
         self.tech_entry.config(values=tuple(self.technicians))
         self.technician.set(next((name for name,iid in self.technicians.items() if iid==previous),''))
+        self.stock_ready='stock' in result and not result.get('error')
+        self.stock_rows=result['stock']['groups'] if self.stock_ready else []
+        self.detected_stock_edition=result.get('detected_edition','')
+        self.render_stock_table()
+        self.update_stock_labels()
         self.loading_users=False
         self.idle_controls()
-        self.status.set(result.get('error') or ('Seleccione un técnico de la lista del servidor.' if self.technicians else 'No hay técnicos activos. Añádalos en Usuarios / técnicos del servidor y actualice la lista.'))
+        if self.stock_ready:
+            try:stamp=datetime.fromisoformat(result['stock']['updated']).astimezone().strftime('%H:%M:%S')
+            except (ValueError,KeyError,TypeError):stamp=datetime.now().strftime('%H:%M:%S')
+            self.stock_time.set('Actualizado: '+stamp+' · actualización cada 15 segundos · seleccione una fila para elegir su tipo')
+        if not result.get('quiet') or result.get('error'):
+            self.status.set(result.get('error') or ('Seleccione un técnico de la lista del servidor.' if self.technicians else 'No hay técnicos activos. Añádalos en Usuarios / técnicos del servidor y actualice la lista.'))
+
+    def render_stock_table(self):
+        selected_pair=None
+        selected=self.stock_table.selection()
+        if selected:
+            values=self.stock_table.item(selected[0])['values']
+            selected_pair=tuple(str(v) for v in values[:2])
+        previous_y=self.stock_table.yview()
+        self.stock_table.delete(*self.stock_table.get_children())
+        for index,row in enumerate(self.stock_rows):
+            self.stock_table.insert('','end',iid=str(index),values=(row['edition'],row['channel'],row['available']))
+            if selected_pair==(row['edition'],row['channel']):self.stock_table.selection_set(str(index))
+        if previous_y:self.stock_table.yview_moveto(previous_y[0])
+
+    def update_stock_labels(self):
+        if not self.stock_ready:
+            self.stock_total.set('Disponibles totales: —')
+            self.stock_selection.set('Sin stock confirmado: conecte o actualice los datos del servidor.')
+            self.stock_time.set('Stock sin consultar o conexión no disponible')
+            return
+        total=sum(row['available'] for row in self.stock_rows)
+        self.stock_total.set(f'Disponibles totales: {total}')
+        edition=self.edition.get()
+        if edition=='Automática (Windows)':edition=self.detected_stock_edition
+        if not edition:
+            self.stock_selection.set('Edición automática sin detectar: seleccione una edición o una fila para ver sus existencias.')
+            return
+        channel=self.channel.get()
+        available=sum(row['available'] for row in self.stock_rows if row['edition']==edition and channel in ('Cualquiera',row['channel']))
+        self.stock_selection.set(f'Selección: {edition} / {channel} · Disponibles: {available}')
+
+    def type_filter_changed(self):
+        selected=self.stock_table.selection()
+        if selected:self.stock_table.selection_remove(*selected)
+        self.update_stock_labels()
+
+    def select_stock_type(self,event=None):
+        if self.running or self.loading_users:return
+        selected=self.stock_table.selection()
+        if selected:
+            values=self.stock_table.item(selected[0])['values']
+            self.edition.set(str(values[0])); self.channel.set(str(values[1]))
+            self.update_stock_labels()
+
+    def auto_refresh_stock(self):
+        modal=self.root.tk.call('grab','current',self.root._w)
+        if self.stock_ready and not self.running and not self.loading_users and not modal:
+            self.refresh_technicians(quiet=True)
+        self.root.after(15000,self.auto_refresh_stock)
 
     def close(self):
         if self.running:
@@ -319,11 +431,14 @@ class Client:
                 self.status.set(text)
                 self.log.config(state='normal'); self.log.insert('end',text+'\n'); self.log.see('end'); self.log.config(state='disabled')
                 if kind=='done':
-                    self.running=False; self.idle_controls(); self.progress.stop()
+                    self.running=False; self.idle_controls(); self.progress.stop(); self.refresh_technicians(quiet=True)
         except queue.Empty: pass
         self.root.after(100,self.poll)
     def start(self):
         if self.running or self.loading_users: return
+        if not self.stock_ready:
+            self.status.set('Conecte al servidor para consultar el stock disponible antes de instalar.')
+            return
         selected_id=self.technicians.get(self.technician.get())
         if selected_id is None:
             self.status.set('Conecte al servidor y seleccione un técnico de su lista.')

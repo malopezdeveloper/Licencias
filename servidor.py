@@ -279,6 +279,18 @@ class Stock:
                 CASE WHEN a.id IS NOT NULL THEN a.state WHEN l.enabled=0 THEN 'retirada' WHEN l.edition='Sin identificar' OR l.channel='Sin identificar' THEN 'sin identificar' ELSE 'disponible' END AS state
                 FROM licenses l LEFT JOIN assignments a ON a.license_id=l.id AND a.state!='baja' ORDER BY l.id''')]
 
+    def availability(self):
+        """Resumen sin claves ni datos de equipos; una única consulta consistente."""
+        with self.connection() as c:
+            groups = [dict(row) for row in c.execute("""
+                SELECT l.edition,l.channel,
+                    SUM(CASE WHEN l.enabled=1 AND a.id IS NULL THEN 1 ELSE 0 END) AS available
+                FROM licenses l LEFT JOIN assignments a ON a.license_id=l.id AND a.state!='baja'
+                WHERE l.edition!=? AND l.channel!=?
+                GROUP BY l.edition,l.channel ORDER BY l.edition,l.channel
+            """, (UNKNOWN, UNKNOWN))]
+        return {'available': sum(row['available'] for row in groups), 'groups': groups, 'updated': now()}
+
     def assignments(self):
         with self.connection() as c:
             return [dict(r) for r in c.execute('''SELECT a.*,l.name,l.suffix,l.edition,l.channel,l.reference FROM assignments a
@@ -499,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/reserve':
                 result = self.server.stock.reserve(data, self.client_address[0])
                 self.reply(200 if result else 409, result or {'error': 'Stock agotado'})
+            elif self.path == '/stock':
+                self.reply(200, self.server.stock.availability())
             elif self.path == '/technicians':
                 self.reply(200, {'technicians': [{'id': r['id'], 'name': r['name']} for r in self.server.stock.technicians(active_only=True)]})
             elif self.path == '/report':
